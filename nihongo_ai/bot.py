@@ -24,7 +24,7 @@ from . import handlers
 from .scheduler import setup_scheduler
 
 
-def main() -> None:
+async def main() -> None:
     """Build, configure, and run the bot."""
 
     # ------------------------------------------------------------------
@@ -90,11 +90,18 @@ def main() -> None:
     # Start polling
     # ------------------------------------------------------------------
     logger.info("Nihongo.AI bot is starting... 📘✨")
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message", "callback_query"],
-    )
 
+await app.initialize()
+await app.start()
+await app.updater.start_polling(
+    drop_pending_updates=True,
+    allowed_updates=["message", "callback_query"],
+)
 
-if __name__ == "__main__":
-    main()
+try:
+    await asyncio.Event().wait()
+finally:
+    await app.updater.stop()
+    await app.stop()
+    await app.shutdown()
+
