@@ -91,17 +91,16 @@ async def main() -> None:
     # ------------------------------------------------------------------
     logger.info("Nihongo.AI bot is starting... 📘✨")
 
-await app.initialize()
-await app.start()
-await app.updater.start_polling(
-    drop_pending_updates=True,
-    allowed_updates=["message", "callback_query"],
-)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
 
-try:
-    await asyncio.Event().wait()
-finally:
-    await app.updater.stop()
-    await app.stop()
-    await app.shutdown()
-
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
