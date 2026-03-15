@@ -418,7 +418,7 @@ async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     db.delete_quiz_for_date(today)
     db.delete_bonus_quizzes_for_date(today)
 
-    quiz = qg.generate_quiz_with_fallback(today)
+    quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
     db.save_today_quiz(quiz)
 
     await send_quiz_to_user(context, chat_id, quiz)
@@ -533,8 +533,6 @@ async def _record_and_respond(update: Update, context: ContextTypes.DEFAULT_TYPE
     is_correct = chosen == quiz.correct_option
 
     recorded = db.mark_answer(chat_id, quiz_date, chosen, is_correct, quiz.question_type)
-    quiz.question_type,
-)
     if not recorded:
         return
 
