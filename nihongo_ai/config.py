@@ -31,8 +31,10 @@ ADMIN_CHAT_IDS: set[int] = set()
 if _raw_admin_ids:
     for part in _raw_admin_ids.split(","):
         part = part.strip()
-        if part.isdigit():
+        try:
             ADMIN_CHAT_IDS.add(int(part))
+        except ValueError:
+            pass
 
 # ---------------------------------------------------------------------------
 # OpenAI
