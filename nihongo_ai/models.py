@@ -42,6 +42,7 @@ class Quiz:
     explanation_en: str = ""
     topic_label: str = ""
     topic_label_en: str = ""
+    question_type: str = ""  # main_idea, detail_comprehension, inference, vocabulary_in_context, pronoun_reference
     jlpt_level: str = "N5-N4"
     is_fallback: bool = False
     created_at: str = ""                # ISO datetime
