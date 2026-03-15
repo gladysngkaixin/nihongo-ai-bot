@@ -32,6 +32,7 @@ from .models import Quiz, WeeklyStats
 from . import database as db
 from . import quiz_generator as qg
 from .handlers import send_quiz_to_user
+from . import config as cfg
 
 # ---------------------------------------------------------------------------
 # Module-level reference to the Telegram application
@@ -179,12 +180,13 @@ async def _retry_send_job(chat_ids: list[int], quiz: Quiz, attempt: int) -> None
 
 
 # ---------------------------------------------------------------------------
-# Fallback retry (10 min after fallback quiz)
+# Fallback retry
 # ---------------------------------------------------------------------------
 
 def _schedule_fallback_retry(date_str: str) -> None:
-    """If a fallback quiz was sent, try generating the full version in 10 min."""
-    run_time = datetime.now(TIMEZONE) + timedelta(minutes=10)
+    """If a fallback quiz was sent, try generating the full version later."""
+    delay_minutes = getattr(cfg, "FULL_QUIZ_RETRY_DELAY_MINUTES", 10)
+    run_time = datetime.now(TIMEZONE) + timedelta(minutes=delay_minutes)
     scheduler = get_scheduler()
 
     scheduler.add_job(
@@ -195,7 +197,7 @@ def _schedule_fallback_retry(date_str: str) -> None:
         replace_existing=True,
         args=[date_str],
     )
-    logger.info("Scheduled fallback retry in 10 min for %s", date_str)
+    logger.info("Scheduled fallback retry in %d min for %s", delay_minutes, date_str)
 
 
 async def _fallback_retry_job(date_str: str) -> None:
@@ -246,7 +248,6 @@ async def reminder_job(hour: int) -> None:
     today = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
     message = REMINDER_MESSAGES.get(hour, "⏰ Don't forget today's Nihongo.AI reading!")
 
-    # Get users who haven't answered
     unanswered = db.get_unanswered_users(today)
     logger.info("Reminder @%d:00 — %d unanswered users", hour, len(unanswered))
 
@@ -269,10 +270,8 @@ async def weekly_summary_job() -> None:
         return
 
     now = datetime.now(TIMEZONE)
-    # Calculate the week range (Monday to Friday)
-    # Friday is weekday 4
     end_date = now.strftime("%Y-%m-%d")
-    start_date = (now - timedelta(days=4)).strftime("%Y-%m-%d")  # Monday
+    start_date = (now - timedelta(days=4)).strftime("%Y-%m-%d")
 
     active_users = db.get_active_users()
     logger.info("Weekly summary for %d active users (%s to %s)",
@@ -302,13 +301,11 @@ def _format_weekly_summary(chat_id: int, answers: list, streak: int) -> str:
     correct = sum(1 for a in answers if a.is_correct)
     accuracy = (correct / total * 100) if total > 0 else 0
 
-    # Analyze common mistakes
     mistake_types: dict[str, int] = {}
     for a in answers:
         if not a.is_correct and a.question_type:
             mistake_types[a.question_type] = mistake_types.get(a.question_type, 0) + 1
 
-    # Map question types to readable categories
     type_labels = {
         "main_idea": "main idea questions",
         "detail_comprehension": "detail misreading",
@@ -324,7 +321,6 @@ def _format_weekly_summary(chat_id: int, answers: list, streak: int) -> str:
     if not common_mistakes:
         common_mistakes = ["None — great job!"]
 
-    # Focus points
     focus_points = []
     if "vocabulary misunderstanding" in common_mistakes:
         focus_points.append("Review vocabulary from recent passages")
