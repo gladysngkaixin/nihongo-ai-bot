@@ -5,8 +5,8 @@ Centralizes all configuration constants, environment variable loading,
 and application-wide settings.
 """
 
-import os
 import logging
+import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -37,46 +37,48 @@ if _raw_admin_ids:
 # ---------------------------------------------------------------------------
 # OpenAI
 # ---------------------------------------------------------------------------
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-GENERATION_TIMEOUT: int = 15  # seconds
+GENERATION_TIMEOUT: int = 30  # increased from 15
 
 # ---------------------------------------------------------------------------
 # Timezone & Scheduling
 # ---------------------------------------------------------------------------
 TIMEZONE = ZoneInfo("Asia/Singapore")
-QUIZ_HOUR = 9       # 9:00 AM SGT
-REMINDER_HOURS = [12, 18, 21]  # 12pm, 6pm, 9pm SGT
-WEEKLY_SUMMARY_DAY = "fri"     # Friday
+QUIZ_HOUR = 9
+REMINDER_HOURS = [12, 18, 21]
+WEEKLY_SUMMARY_DAY = "fri"
+FULL_QUIZ_RETRY_DELAY_MINUTES = 10
 
 # ---------------------------------------------------------------------------
 # User Activity
 # ---------------------------------------------------------------------------
-ACTIVE_DAYS_THRESHOLD = 10  # days since last interaction to be "active"
+ACTIVE_DAYS_THRESHOLD = 10
 
 # ---------------------------------------------------------------------------
 # Passage / Quiz
 # ---------------------------------------------------------------------------
-# Main daily quiz: 250–300 Japanese characters (section 30)
 PASSAGE_MIN_CHARS = 250
 PASSAGE_MAX_CHARS = 300
 
-# Fallback quiz: 200–250 characters (section 21)
 FALLBACK_PASSAGE_MIN_CHARS = 200
 FALLBACK_PASSAGE_MAX_CHARS = 250
 
-# Bonus quiz: 150–200 characters (section 30)
 BONUS_PASSAGE_MIN_CHARS = 150
 BONUS_PASSAGE_MAX_CHARS = 200
 
-# Maximum quizzes per user per day (1 main + 2 bonus = 3 total, section 29)
 MAX_DAILY_QUIZZES = 3
 
-# Difficulty adaptation thresholds (over last 10 quizzes)
+# ---------------------------------------------------------------------------
+# Difficulty adaptation
+# ---------------------------------------------------------------------------
 DIFFICULTY_WINDOW = 10
-HIGH_ACCURACY_THRESHOLD = 0.85   # > 85% → more N4
-LOW_ACCURACY_THRESHOLD = 0.50    # < 50% → more N5
+HIGH_ACCURACY_THRESHOLD = 0.85
+LOW_ACCURACY_THRESHOLD = 0.50
 
-# Topic repetition rules
+# ---------------------------------------------------------------------------
+# Topic rotation
+# ---------------------------------------------------------------------------
 MAX_TOPIC_REPEAT_IN_14_DAYS = 3
 
 # ---------------------------------------------------------------------------
