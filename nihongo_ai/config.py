@@ -56,10 +56,20 @@ ACTIVE_DAYS_THRESHOLD = 10  # days since last interaction to be "active"
 # ---------------------------------------------------------------------------
 # Passage / Quiz
 # ---------------------------------------------------------------------------
-PASSAGE_MIN_CHARS = 200
-PASSAGE_MAX_CHARS = 250
-FALLBACK_PASSAGE_MIN_CHARS = 80
-FALLBACK_PASSAGE_MAX_CHARS = 90
+# Main daily quiz: 250–300 Japanese characters (section 30)
+PASSAGE_MIN_CHARS = 250
+PASSAGE_MAX_CHARS = 300
+
+# Fallback quiz: 200–250 characters (section 21)
+FALLBACK_PASSAGE_MIN_CHARS = 200
+FALLBACK_PASSAGE_MAX_CHARS = 250
+
+# Bonus quiz: 150–200 characters (section 30)
+BONUS_PASSAGE_MIN_CHARS = 150
+BONUS_PASSAGE_MAX_CHARS = 200
+
+# Maximum quizzes per user per day (1 main + 2 bonus = 3 total, section 29)
+MAX_DAILY_QUIZZES = 3
 
 # Difficulty adaptation thresholds (over last 10 quizzes)
 DIFFICULTY_WINDOW = 10

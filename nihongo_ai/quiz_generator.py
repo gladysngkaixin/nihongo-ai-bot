@@ -22,11 +22,13 @@ from .config import (
     PASSAGE_MAX_CHARS,
     FALLBACK_PASSAGE_MIN_CHARS,
     FALLBACK_PASSAGE_MAX_CHARS,
+    BONUS_PASSAGE_MIN_CHARS,
+    BONUS_PASSAGE_MAX_CHARS,
     TIMEZONE,
     MAX_TOPIC_REPEAT_IN_14_DAYS,
     logger,
 )
-from .models import Quiz
+from .models import Quiz, BonusQuiz
 from . import database as db
 
 # ---------------------------------------------------------------------------
@@ -369,6 +371,140 @@ def generate_quiz_with_fallback(date_str: Optional[str] = None) -> Quiz:
     # Last resort: hardcoded fallback
     logger.error("All generation attempts failed, using hardcoded fallback")
     return _hardcoded_fallback(date_str)
+
+
+# ---------------------------------------------------------------------------
+# Bonus Quiz generation
+# ---------------------------------------------------------------------------
+
+def _parse_bonus_response(raw: str, bonus_id: str, date_str: str,
+                          chat_id: int, quiz_type: str,
+                          quiz_sequence_for_day: int) -> Optional[BonusQuiz]:
+    """Parse the OpenAI JSON response into a BonusQuiz object."""
+    try:
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1])
+        data = json.loads(text)
+
+        correct = int(data["correct_option"])
+        if correct < 1 or correct > 4:
+            correct = 1
+
+        bonus = BonusQuiz(
+            bonus_id=bonus_id,
+            date=date_str,
+            quiz_type=quiz_type,
+            quiz_sequence_for_day=quiz_sequence_for_day,
+            chat_id=chat_id,
+            passage=data["passage"],
+            question=data["question"],
+            option1=data["option1"],
+            option2=data["option2"],
+            option3=data["option3"],
+            option4=data["option4"],
+            correct_option=correct,
+            explanation_ja=data.get("explanation_ja", ""),
+            explanation_en=data.get("explanation_en", ""),
+            topic_label=data.get("topic_label", ""),
+            topic_label_en=data.get("topic_label_en", ""),
+            is_answered=False,
+            answered_at="",
+            chosen_option=0,
+            created_at=datetime.now(TIMEZONE).isoformat(),
+        )
+        return bonus
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        logger.error("Failed to parse bonus quiz response: %s — raw: %s", e, raw[:200])
+        return None
+
+
+def format_bonus_quiz_message(bonus: BonusQuiz) -> str:
+    """Format a bonus quiz into the shorter Telegram message structure (section 33)."""
+    msg = (
+        f"✨ Bonus Quiz\n"
+        f"📖 読解（Practice）\n\n"
+        f"{bonus.passage}\n\n"
+        f"❓質問\n"
+        f"{bonus.question}\n\n"
+        f"1. {bonus.option1}\n"
+        f"2. {bonus.option2}\n"
+        f"3. {bonus.option3}\n"
+        f"4. {bonus.option4}\n\n"
+        f"👉 答えを選んでね（1 / 2 / 3 / 4）"
+    )
+    return msg
+
+
+def format_bonus_explanation(bonus: BonusQuiz, chosen: int) -> str:
+    """Format the explanation message after answering a bonus quiz."""
+    is_correct = chosen == bonus.correct_option
+    options = [bonus.option1, bonus.option2, bonus.option3, bonus.option4]
+    correct_text = options[bonus.correct_option - 1]
+
+    header = "✅ 正解！" if is_correct else "❌ 残念！"
+    msg = (
+        f"{header}\n\n"
+        f"正しい答え：{bonus.correct_option}. {correct_text}\n\n"
+        f"理由（日本語）：{bonus.explanation_ja}\n\n"
+        f"English Explanation: {bonus.explanation_en}"
+    )
+    return msg
+
+
+def generate_bonus_quiz(date_str: str, chat_id: int,
+                        quiz_type: str, quiz_sequence_for_day: int) -> Optional[BonusQuiz]:
+    """
+    Generate a bonus quiz for a user.
+    Bonus quizzes ignore topic rotation rules (section 40).
+    Returns BonusQuiz on success, None on failure.
+    """
+    # Pick a random topic — bonus quizzes ignore rotation rules (section 40)
+    topic = random.choice(SAFE_TOPICS)
+    question_type = _next_question_type()
+    jlpt_level = _determine_jlpt_level(chat_id)
+
+    min_chars = BONUS_PASSAGE_MIN_CHARS
+    max_chars = BONUS_PASSAGE_MAX_CHARS
+
+    system_prompt, user_prompt = _build_generation_prompt(
+        topic, question_type, jlpt_level, min_chars, max_chars
+    )
+
+    bonus_id = f"{date_str}_{quiz_type}"
+
+    try:
+        logger.info("Generating bonus quiz: bonus_id=%s topic=%s type=%s",
+                     bonus_id, topic, question_type)
+
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.8,
+            max_tokens=1500,
+            timeout=GENERATION_TIMEOUT,
+        )
+
+        raw = response.choices[0].message.content or ""
+        bonus = _parse_bonus_response(
+            raw, bonus_id, date_str, chat_id, quiz_type, quiz_sequence_for_day
+        )
+
+        if bonus is None:
+            logger.error("Bonus quiz parsing failed")
+            return None
+
+        bonus.full_message = format_bonus_quiz_message(bonus)
+        logger.info("bonus_quiz_generated: bonus_id=%s chat_id=%s", bonus_id, chat_id)
+        return bonus
+
+    except Exception as e:
+        logger.error("Bonus quiz generation failed: %s", e)
+        return None
 
 
 def _hardcoded_fallback(date_str: str) -> Quiz:

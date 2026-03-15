@@ -49,6 +49,34 @@ class Quiz:
 
 
 @dataclass
+class BonusQuiz:
+    """A bonus quiz offered after the user completes the main daily quiz.
+    Bonus quizzes do not affect streak, weekly summary, or difficulty adaptation.
+    """
+    bonus_id: str = ""                  # e.g. "2024-01-15_bonus_1"
+    date: str = ""                      # YYYY-MM-DD
+    quiz_type: str = ""                 # "bonus_1" or "bonus_2"
+    quiz_sequence_for_day: int = 0      # 2 for first bonus, 3 for second bonus
+    chat_id: int = 0                    # owner user
+    passage: str = ""
+    question: str = ""
+    option1: str = ""
+    option2: str = ""
+    option3: str = ""
+    option4: str = ""
+    correct_option: int = 1             # 1-4
+    explanation_ja: str = ""
+    explanation_en: str = ""
+    topic_label: str = ""
+    topic_label_en: str = ""
+    is_answered: bool = False
+    answered_at: str = ""               # ISO datetime
+    chosen_option: int = 0
+    created_at: str = ""                # ISO datetime
+    full_message: str = ""              # Pre-formatted Telegram message
+
+
+@dataclass
 class Answer:
     """A user's answer to a quiz."""
     chat_id: int = 0

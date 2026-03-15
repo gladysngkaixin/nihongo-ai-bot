@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from .config import DB_PATH, TIMEZONE, ACTIVE_DAYS_THRESHOLD, logger
-from .models import User, Quiz, Answer, WeeklyStats
+from .models import User, Quiz, BonusQuiz, Answer, WeeklyStats
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,33 @@ CREATE TABLE IF NOT EXISTS answers (
 CREATE INDEX IF NOT EXISTS idx_answers_chat ON answers(chat_id);
 CREATE INDEX IF NOT EXISTS idx_answers_date ON answers(quiz_date);
 CREATE INDEX IF NOT EXISTS idx_quizzes_date ON daily_quizzes(date);
+
+CREATE TABLE IF NOT EXISTS bonus_quizzes (
+    bonus_id        TEXT NOT NULL,
+    date            TEXT NOT NULL,
+    quiz_type       TEXT NOT NULL DEFAULT '',
+    quiz_sequence_for_day INTEGER NOT NULL DEFAULT 2,
+    chat_id         INTEGER NOT NULL,
+    passage         TEXT NOT NULL,
+    question        TEXT NOT NULL,
+    option1         TEXT NOT NULL,
+    option2         TEXT NOT NULL,
+    option3         TEXT NOT NULL,
+    option4         TEXT NOT NULL,
+    correct_option  INTEGER NOT NULL,
+    explanation_ja  TEXT NOT NULL DEFAULT '',
+    explanation_en  TEXT NOT NULL DEFAULT '',
+    topic_label     TEXT NOT NULL DEFAULT '',
+    topic_label_en  TEXT NOT NULL DEFAULT '',
+    is_answered     INTEGER NOT NULL DEFAULT 0,
+    answered_at     TEXT NOT NULL DEFAULT '',
+    chosen_option   INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    full_message    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (bonus_id, chat_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bonus_chat_date ON bonus_quizzes(chat_id, date);
 """
 
 
@@ -222,6 +249,7 @@ def delete_user(chat_id: int) -> None:
     """Delete all data for a user (GDPR-style)."""
     conn = _get_conn()
     conn.execute("DELETE FROM answers WHERE chat_id=?", (chat_id,))
+    conn.execute("DELETE FROM bonus_quizzes WHERE chat_id=?", (chat_id,))
     conn.execute("DELETE FROM users WHERE chat_id=?", (chat_id,))
     conn.commit()
     logger.info("Deleted all data for chat_id=%s", chat_id)
@@ -392,6 +420,140 @@ def get_weekly_answers(chat_id: int, start_date: str, end_date: str) -> list[Ans
         )
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Bonus Quiz helpers
+# ---------------------------------------------------------------------------
+
+def _row_to_bonus_quiz(row: sqlite3.Row) -> BonusQuiz:
+    return BonusQuiz(
+        bonus_id=row["bonus_id"],
+        date=row["date"],
+        quiz_type=row["quiz_type"],
+        quiz_sequence_for_day=row["quiz_sequence_for_day"],
+        chat_id=row["chat_id"],
+        passage=row["passage"],
+        question=row["question"],
+        option1=row["option1"],
+        option2=row["option2"],
+        option3=row["option3"],
+        option4=row["option4"],
+        correct_option=row["correct_option"],
+        explanation_ja=row["explanation_ja"],
+        explanation_en=row["explanation_en"],
+        topic_label=row["topic_label"],
+        topic_label_en=row["topic_label_en"],
+        is_answered=bool(row["is_answered"]),
+        answered_at=row["answered_at"],
+        chosen_option=row["chosen_option"],
+        created_at=row["created_at"],
+        full_message=row["full_message"],
+    )
+
+
+def save_bonus_quiz(bonus_quiz: BonusQuiz) -> None:
+    """Insert or replace a bonus quiz record."""
+    conn = _get_conn()
+    conn.execute(
+        """INSERT OR REPLACE INTO bonus_quizzes
+           (bonus_id, date, quiz_type, quiz_sequence_for_day, chat_id,
+            passage, question, option1, option2, option3, option4,
+            correct_option, explanation_ja, explanation_en,
+            topic_label, topic_label_en, is_answered, answered_at,
+            chosen_option, created_at, full_message)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            bonus_quiz.bonus_id, bonus_quiz.date, bonus_quiz.quiz_type,
+            bonus_quiz.quiz_sequence_for_day, bonus_quiz.chat_id,
+            bonus_quiz.passage, bonus_quiz.question,
+            bonus_quiz.option1, bonus_quiz.option2,
+            bonus_quiz.option3, bonus_quiz.option4,
+            bonus_quiz.correct_option, bonus_quiz.explanation_ja,
+            bonus_quiz.explanation_en, bonus_quiz.topic_label,
+            bonus_quiz.topic_label_en, int(bonus_quiz.is_answered),
+            bonus_quiz.answered_at, bonus_quiz.chosen_option,
+            bonus_quiz.created_at, bonus_quiz.full_message,
+        ),
+    )
+    conn.commit()
+    logger.info("Saved bonus quiz bonus_id=%s chat_id=%s",
+                bonus_quiz.bonus_id, bonus_quiz.chat_id)
+
+
+def get_bonus_quizzes_for_day(chat_id: int, date_str: str) -> list[BonusQuiz]:
+    """Return all bonus quizzes for a user on a given date, ordered by sequence."""
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT * FROM bonus_quizzes
+           WHERE chat_id=? AND date=?
+           ORDER BY quiz_sequence_for_day ASC""",
+        (chat_id, date_str),
+    ).fetchall()
+    return [_row_to_bonus_quiz(r) for r in rows]
+
+
+def get_active_bonus_quiz(chat_id: int, date_str: str) -> Optional[BonusQuiz]:
+    """Return the most recent unanswered bonus quiz for a user today, or None."""
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT * FROM bonus_quizzes
+           WHERE chat_id=? AND date=? AND is_answered=0
+           ORDER BY quiz_sequence_for_day ASC
+           LIMIT 1""",
+        (chat_id, date_str),
+    ).fetchone()
+    return _row_to_bonus_quiz(row) if row else None
+
+
+def mark_bonus_answer(bonus_id: str, chat_id: int,
+                      chosen: int, is_correct: bool) -> bool:
+    """Record an answer for a bonus quiz. Returns True if updated, False if already answered."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT is_answered FROM bonus_quizzes WHERE bonus_id=? AND chat_id=?",
+        (bonus_id, chat_id),
+    ).fetchone()
+    if not row or row["is_answered"]:
+        return False
+    conn.execute(
+        """UPDATE bonus_quizzes
+           SET is_answered=1, answered_at=?, chosen_option=?
+           WHERE bonus_id=? AND chat_id=?""",
+        (_now_iso(), chosen, bonus_id, chat_id),
+    )
+    conn.commit()
+    logger.info("Bonus answer recorded: bonus_id=%s chat_id=%s chosen=%s correct=%s",
+                bonus_id, chat_id, chosen, is_correct)
+    return True
+
+
+def count_quizzes_today(chat_id: int, date_str: str) -> int:
+    """Return total number of quizzes answered today (main + bonus)."""
+    conn = _get_conn()
+    # Count main quiz answers
+    main_row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM answers WHERE chat_id=? AND quiz_date=?",
+        (chat_id, date_str),
+    ).fetchone()
+    main_count = main_row["cnt"] if main_row else 0
+
+    # Count answered bonus quizzes
+    bonus_row = conn.execute(
+        "SELECT COUNT(*) as cnt FROM bonus_quizzes WHERE chat_id=? AND date=? AND is_answered=1",
+        (chat_id, date_str),
+    ).fetchone()
+    bonus_count = bonus_row["cnt"] if bonus_row else 0
+
+    return main_count + bonus_count
+
+
+def delete_bonus_quizzes_for_date(date_str: str) -> None:
+    """Delete all bonus quizzes for a given date (used by /reset_today for cleanup)."""
+    conn = _get_conn()
+    conn.execute("DELETE FROM bonus_quizzes WHERE date=?", (date_str,))
+    conn.commit()
+    logger.info("Deleted bonus quizzes for date=%s", date_str)
 
 
 def get_unanswered_users(quiz_date: str) -> list[int]:
