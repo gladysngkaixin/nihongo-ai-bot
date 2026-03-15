@@ -45,8 +45,8 @@ class Quiz:
     question_type: str = ""  # main_idea, detail_comprehension, inference, vocabulary_in_context, pronoun_reference
     jlpt_level: str = "N5-N4"
     is_fallback: bool = False
-    created_at: str = ""                # ISO datetime
-    full_message: str = ""              # Pre-formatted Telegram message
+    created_at: str = ""  # ISO datetime
+    full_message: str = ""  # Pre-formatted Telegram message
 
 
 @dataclass
