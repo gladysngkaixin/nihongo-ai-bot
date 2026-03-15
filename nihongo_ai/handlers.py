@@ -124,8 +124,7 @@ def _update_streak(chat_id: int, quiz_date: str) -> None:
     db.update_streak(chat_id, new_streak)
 
 
-async def send_quiz_to_user(context: ContextTypes.DEFAULT_TYPE,
-                            chat_id: int, quiz: Quiz) -> bool:
+async def send_quiz_to_user(context, chat_id: int, quiz: Quiz) -> bool:
     try:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -155,9 +154,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     today = _today_str()
     quiz = db.get_today_quiz(today)
-
     if quiz is None:
-        quiz = qg.generate_quiz_with_fallback(today)
+        quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
         db.save_today_quiz(quiz)
 
     existing = db.get_answer(chat_id, today)
@@ -217,7 +215,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     quiz = db.get_today_quiz(today)
     if quiz is None:
-        quiz = qg.generate_quiz_with_fallback(today)
+        quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
         db.save_today_quiz(quiz)
 
     await send_quiz_to_user(context, chat_id, quiz)
@@ -534,11 +532,7 @@ async def _record_and_respond(update: Update, context: ContextTypes.DEFAULT_TYPE
                               quiz_date: str) -> None:
     is_correct = chosen == quiz.correct_option
 
-    recorded = db.mark_answer(
-    chat_id,
-    quiz_date,
-    chosen,
-    is_correct,
+    recorded = db.mark_answer(chat_id, quiz_date, chosen, is_correct, quiz.question_type)
     quiz.question_type,
 )
     if not recorded:
@@ -653,7 +647,13 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     await query.message.reply_text("⏳ Generating your bonus quiz... please wait!")
-    bonus = qg.generate_bonus_quiz(today, chat_id, quiz_type, quiz_sequence_for_day)
+    bonus = await asyncio.to_thread(
+        qg.generate_bonus_quiz,
+        today,
+        chat_id,
+        quiz_type,
+        quiz_sequence_for_day,
+    )
 
     if bonus is None:
         await context.bot.send_message(
