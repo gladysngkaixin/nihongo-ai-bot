@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import sys
 
+from telegram.error import TimedOut, NetworkError
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -22,6 +24,47 @@ from .config import TELEGRAM_BOT_TOKEN, logger
 from . import database as db
 from . import handlers
 from .scheduler import setup_scheduler
+
+
+STARTUP_RETRIES = 5
+STARTUP_RETRY_DELAY_SECONDS = 5
+TELEGRAM_CONNECT_TIMEOUT = 30.0
+TELEGRAM_READ_TIMEOUT = 30.0
+TELEGRAM_WRITE_TIMEOUT = 30.0
+TELEGRAM_POOL_TIMEOUT = 30.0
+
+
+async def _initialize_with_retry(app) -> None:
+    """Initialize Telegram app with retries to survive transient network timeouts."""
+    last_error: Exception | None = None
+
+    for attempt in range(1, STARTUP_RETRIES + 1):
+        try:
+            logger.info(
+                "Initializing Telegram app (attempt %s/%s)...",
+                attempt,
+                STARTUP_RETRIES,
+            )
+            await app.initialize()
+            logger.info("Telegram app initialized successfully.")
+            return
+        except (TimedOut, NetworkError, OSError) as e:
+            last_error = e
+            logger.warning(
+                "Telegram initialization failed on attempt %s/%s: %s",
+                attempt,
+                STARTUP_RETRIES,
+                e,
+            )
+            if attempt < STARTUP_RETRIES:
+                logger.info(
+                    "Retrying Telegram initialization in %s seconds...",
+                    STARTUP_RETRY_DELAY_SECONDS,
+                )
+                await asyncio.sleep(STARTUP_RETRY_DELAY_SECONDS)
+
+    assert last_error is not None
+    raise last_error
 
 
 async def main() -> None:
@@ -43,9 +86,17 @@ async def main() -> None:
     # ------------------------------------------------------------------
     # Build Telegram application
     # ------------------------------------------------------------------
+    request = HTTPXRequest(
+        connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
+        read_timeout=TELEGRAM_READ_TIMEOUT,
+        write_timeout=TELEGRAM_WRITE_TIMEOUT,
+        pool_timeout=TELEGRAM_POOL_TIMEOUT,
+    )
+
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
+        .request(request)
         .concurrent_updates(True)
         .build()
     )
@@ -92,7 +143,7 @@ async def main() -> None:
     # ------------------------------------------------------------------
     logger.info("Nihongo.AI bot is starting... 📘✨")
 
-    await app.initialize()
+    await _initialize_with_retry(app)
     await app.start()
     await app.updater.start_polling(
         drop_pending_updates=True,
