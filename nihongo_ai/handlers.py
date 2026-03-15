@@ -534,7 +534,13 @@ async def _record_and_respond(update: Update, context: ContextTypes.DEFAULT_TYPE
                               quiz_date: str) -> None:
     is_correct = chosen == quiz.correct_option
 
-    recorded = db.mark_answer(chat_id, quiz_date, chosen, is_correct)
+    recorded = db.mark_answer(
+    chat_id,
+    quiz_date,
+    chosen,
+    is_correct,
+    quiz.question_type,
+)
     if not recorded:
         return
 
