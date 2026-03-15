@@ -342,8 +342,8 @@ def generate_quiz(date_str: Optional[str] = None,
         )
 
         raw = response.choices[0].message.content or ""
+        
         quiz = _parse_quiz_response(raw, date_str)
-
         if quiz is None:
             logger.warning("Quiz parsing failed, returning None")
             return None
