@@ -348,6 +348,7 @@ def generate_quiz(date_str: Optional[str] = None,
             logger.warning("Quiz parsing failed, returning None")
             return None
 
+        quiz.question_type = question_type
         quiz.is_fallback = is_fallback
         quiz.full_message = format_quiz_message(quiz, date_str)
         return quiz
