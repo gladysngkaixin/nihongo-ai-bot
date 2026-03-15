@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from telegram.error import TimedOut, NetworkError
-from telegram.request import HTTPXRequest
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -26,79 +24,35 @@ from . import handlers
 from .scheduler import setup_scheduler
 
 
-STARTUP_RETRIES = 5
-STARTUP_RETRY_DELAY_SECONDS = 5
-
-TELEGRAM_CONNECT_TIMEOUT = 30.0
-TELEGRAM_READ_TIMEOUT = 30.0
-TELEGRAM_WRITE_TIMEOUT = 30.0
-TELEGRAM_POOL_TIMEOUT = 30.0
-
-
-async def _initialize_with_retry(app):
-    """Initialize Telegram app with retries to survive transient network timeouts."""
-    last_error = None
-
-    for attempt in range(1, STARTUP_RETRIES + 1):
-        try:
-            logger.info(
-                "Initializing Telegram app (attempt %s/%s)...",
-                attempt,
-                STARTUP_RETRIES,
-            )
-            await app.initialize()
-            logger.info("Telegram app initialized successfully.")
-            return
-
-        except (TimedOut, NetworkError, OSError) as e:
-            last_error = e
-            logger.warning(
-                "Telegram initialization failed on attempt %s/%s: %s",
-                attempt,
-                STARTUP_RETRIES,
-                e,
-            )
-
-            if attempt < STARTUP_RETRIES:
-                logger.info(
-                    "Retrying Telegram initialization in %s seconds...",
-                    STARTUP_RETRY_DELAY_SECONDS,
-                )
-                await asyncio.sleep(STARTUP_RETRY_DELAY_SECONDS)
-
-    raise last_error
-
-
 async def main() -> None:
     """Build, configure, and run the bot."""
 
+    # ------------------------------------------------------------------
     # Validate configuration
+    # ------------------------------------------------------------------
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN is not set. Exiting.")
         sys.exit(1)
 
-    # Initialize database
+    # ------------------------------------------------------------------
+    # Initialise database
+    # ------------------------------------------------------------------
     db.init_db()
     logger.info("Database ready.")
 
-    # Configure Telegram request timeouts
-    request = HTTPXRequest(
-        connect_timeout=TELEGRAM_CONNECT_TIMEOUT,
-        read_timeout=TELEGRAM_READ_TIMEOUT,
-        write_timeout=TELEGRAM_WRITE_TIMEOUT,
-        pool_timeout=TELEGRAM_POOL_TIMEOUT,
-    )
-
+    # ------------------------------------------------------------------
     # Build Telegram application
+    # ------------------------------------------------------------------
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
-        .request(request)
         .concurrent_updates(True)
         .build()
     )
 
+    # ------------------------------------------------------------------
     # Register command handlers
+    # ------------------------------------------------------------------
     app.add_handler(CommandHandler("start", handlers.start_command))
     app.add_handler(CommandHandler("today", handlers.today_command))
     app.add_handler(CommandHandler("stats", handlers.stats_command))
@@ -110,15 +64,15 @@ async def main() -> None:
     app.add_handler(CommandHandler("delete_my_data", handlers.delete_my_data_command))
     app.add_handler(CommandHandler("reset_today", handlers.reset_today_command))
 
-    # Register callback handlers
-    app.add_handler(
-        CallbackQueryHandler(handlers.answer_callback, pattern=r"^answer_\d$")
-    )
-    app.add_handler(
-        CallbackQueryHandler(handlers.bonus_callback, pattern=r"^bonus_(yes|no)$")
-    )
+    # ------------------------------------------------------------------
+    # Register callback query handlers (inline button presses)
+    # ------------------------------------------------------------------
+    app.add_handler(CallbackQueryHandler(handlers.answer_callback, pattern=r"^answer_\d$"))
+    app.add_handler(CallbackQueryHandler(handlers.bonus_callback, pattern=r"^bonus_(yes|no)$"))
 
-    # Register typed answer handler
+    # ------------------------------------------------------------------
+    # Register text message handler (typed 1/2/3/4)
+    # ------------------------------------------------------------------
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -126,16 +80,19 @@ async def main() -> None:
         )
     )
 
-    # Start scheduler
+    # ------------------------------------------------------------------
+    # Setup and start scheduler
+    # ------------------------------------------------------------------
     scheduler = setup_scheduler(app)
     scheduler.start()
     logger.info("Scheduler started.")
 
+    # ------------------------------------------------------------------
     # Start polling
+    # ------------------------------------------------------------------
     logger.info("Nihongo.AI bot is starting... 📘✨")
 
-    await _initialize_with_retry(app)
-
+    await app.initialize()
     await app.start()
     await app.updater.start_polling(
         drop_pending_updates=True,
