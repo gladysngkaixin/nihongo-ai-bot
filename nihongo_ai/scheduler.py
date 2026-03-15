@@ -105,7 +105,7 @@ async def daily_quiz_job() -> None:
     # Check if quiz already exists (e.g., from /reset_today)
     quiz = db.get_today_quiz(today)
     if quiz is None:
-        quiz = qg.generate_quiz_with_fallback(today)
+        quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
         db.save_today_quiz(quiz)
         logger.info("Quiz generated for %s", today)
 
@@ -209,7 +209,11 @@ async def _fallback_retry_job(date_str: str) -> None:
     if existing and not existing.is_fallback:
         return  # Already replaced
 
-    quiz = qg.generate_quiz(date_str=date_str, is_fallback=False)
+    quiz = await asyncio.to_thread(
+        qg.generate_quiz,
+        date_str=date_str,
+        is_fallback=False,
+    )
     if quiz is None:
         logger.warning("Fallback retry also failed for %s", date_str)
         return
@@ -271,7 +275,7 @@ async def weekly_summary_job() -> None:
 
     now = datetime.now(TIMEZONE)
     end_date = now.strftime("%Y-%m-%d")
-    start_date = (now - timedelta(days=4)).strftime("%Y-%m-%d")
+    start_date = (now - timedelta(days=6)).strftime("%Y-%m-%d")
 
     active_users = db.get_active_users()
     logger.info("Weekly summary for %d active users (%s to %s)",
