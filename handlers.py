@@ -175,14 +175,14 @@ async def send_quiz_to_user(context: ContextTypes.DEFAULT_TYPE,
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start — welcome message + send today's quiz immediately."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
     if _is_spam(chat_id):
         return
 
-    user = db.get_or_create_user(chat_id)
+    db.get_or_create_user(chat_id)
     db.update_last_interaction(chat_id)
 
     # Send welcome
@@ -201,7 +201,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Check if already answered
     existing = db.get_answer(chat_id, today)
     if existing:
-        # Daily quiz done — check bonus quiz state (section 42)
+        # Daily quiz done — check bonus quiz state
         total_done = db.count_quizzes_today(chat_id, today)
         if total_done >= MAX_DAILY_QUIZZES:
             await update.message.reply_text(
@@ -210,7 +210,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 "See you tomorrow again! 📘✨"
             )
         else:
-            await _offer_bonus_quiz(update, context, chat_id, total_done)
+            active_bonus = db.get_active_bonus_quiz(chat_id, today)
+            if active_bonus:
+                await _send_bonus_quiz_to_user(update, context, chat_id, active_bonus)
+            else:
+                await _offer_bonus_quiz(update, context, chat_id, total_done)
         return
 
     await send_quiz_to_user(context, chat_id, quiz)
@@ -221,8 +225,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # ---------------------------------------------------------------------------
 
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /today — resend today's quiz or show bonus offer (section 42)."""
-    if not update.effective_chat:
+    """Handle /today — resend today's quiz or show bonus offer."""
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -250,10 +254,9 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Scenario: daily quiz completed, bonus available
     existing_main = db.get_answer(chat_id, today)
     if existing_main:
-        # Check if there's already an active unanswered bonus quiz
         active_bonus = db.get_active_bonus_quiz(chat_id, today)
         if active_bonus:
-            # Resend the existing unanswered bonus quiz (section 39A)
+            # Resend the existing unanswered bonus quiz
             await _send_bonus_quiz_to_user(update, context, chat_id, active_bonus)
             logger.info("/today resent active bonus quiz: bonus_id=%s chat_id=%s",
                         active_bonus.bonus_id, chat_id)
@@ -279,7 +282,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /stats — show user statistics."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -316,7 +319,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def level_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /level — show current difficulty level."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -348,7 +351,7 @@ async def level_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /pause — stop receiving daily quizzes."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -371,7 +374,7 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /resume — resume daily quizzes."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -429,7 +432,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /help — show available commands."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -463,7 +466,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def delete_my_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /delete_my_data — delete all user data."""
-    if not update.effective_chat:
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -485,8 +488,14 @@ async def delete_my_data_command(update: Update, context: ContextTypes.DEFAULT_T
 # ---------------------------------------------------------------------------
 
 async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /reset_today — admin-only: regenerate today's quiz."""
-    if not update.effective_chat:
+    """Handle /reset_today — admin-only: generate a fresh quiz preview for the admin.
+
+    This command generates a brand-new quiz preview and sends it only to the admin.
+    It does NOT modify the globally stored daily quiz, does NOT delete any
+    answer records, and does NOT affect any other user's state or bonus quizzes.
+    The preview is review-only and is not answerable.
+    """
+    if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
 
@@ -499,35 +508,25 @@ async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     today = _today_str()
 
-    await update.message.reply_text("🔄 Regenerating today's quiz...")
-    logger.info("/reset_today by admin chat_id=%s", chat_id)
+    await update.message.reply_text("⏳ Generating a fresh quiz preview for you...")
+    logger.info("/reset_today preview requested by admin chat_id=%s", chat_id)
 
-    # Delete old quiz + answers + bonus quizzes
-    db.delete_quiz_for_date(today)
-    db.delete_bonus_quizzes_for_date(today)
-
-    # Generate new
+    # Generate a fresh quiz without touching the globally stored daily quiz.
+    # db.delete_quiz_for_date and db.save_today_quiz are intentionally NOT called
+    # so that other users' quiz state and answer records remain completely unaffected.
     quiz = qg.generate_quiz_with_fallback(today)
-    db.save_today_quiz(quiz)
 
-    # Send to admin
-    await send_quiz_to_user(context, chat_id, quiz)
-
-    # Send to all active users (except admin)
-    active_users = db.get_active_users()
-    sent_count = 0
-    for user in active_users:
-        if user.chat_id == chat_id:
-            continue
-        success = await send_quiz_to_user(context, user.chat_id, quiz)
-        if success:
-            sent_count += 1
+    # Send only to the admin — as a preview only, with NO answer buttons.
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=quiz.full_message,
+    )
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"✅ Quiz regenerated and sent to {sent_count + 1} user(s) (including you).",
+        text="✅ A fresh quiz preview has been generated and sent only to you. This preview is for review only.",
     )
-    logger.info("reset_today complete: sent to %s users", sent_count + 1)
+    logger.info("/reset_today complete: preview sent to admin chat_id=%s only", chat_id)
 
 
 # ---------------------------------------------------------------------------
@@ -600,12 +599,22 @@ async def _process_answer(update: Update, context: ContextTypes.DEFAULT_TYPE,
     existing_today = db.get_answer(chat_id, today)
 
     if today_quiz and existing_today:
-        # Main daily quiz already answered — check if there's an active bonus quiz
+        # Main daily quiz already answered.
+        # Check if there is an active (unanswered) bonus quiz for today.
         active_bonus = db.get_active_bonus_quiz(chat_id, today)
         if active_bonus:
             await _process_bonus_answer(update, context, chat_id, chosen)
         else:
-            logger.info("Duplicate answer ignored: chat_id=%s date=%s", chat_id, today)
+            # No active bonus quiz — check whether any completed bonus quiz exists.
+            # If so, the user is tapping buttons from an already-completed quiz.
+            completed_bonuses = db.get_bonus_quizzes_for_day(chat_id, today)
+            if any(b.is_answered for b in completed_bonuses):
+                reply_func = _get_reply_func(update)
+                await reply_func("📌 This quiz has already been completed.")
+                logger.info("Stale bonus button press ignored: chat_id=%s date=%s",
+                            chat_id, today)
+            else:
+                logger.info("Duplicate answer ignored: chat_id=%s date=%s", chat_id, today)
         return
 
     # If today's quiz exists and not answered → answer today's quiz
@@ -659,10 +668,13 @@ async def _record_and_respond(update: Update, context: ContextTypes.DEFAULT_TYPE
     logger.info("Answer evaluated: chat_id=%s date=%s chosen=%s correct=%s",
                 chat_id, quiz_date, chosen, is_correct)
 
-    # After answering the main daily quiz, offer a bonus quiz if under the limit
-    total_done = db.count_quizzes_today(chat_id, quiz_date)
-    if total_done < MAX_DAILY_QUIZZES:
-        await _offer_bonus_quiz(update, context, chat_id, total_done)
+    # Offer a bonus quiz only when the quiz answered is today's main daily quiz.
+    # Late answers to yesterday's quiz must never trigger the bonus quiz flow.
+    today = _today_str()
+    if quiz_date == today:
+        total_done = db.count_quizzes_today(chat_id, quiz_date)
+        if total_done < MAX_DAILY_QUIZZES:
+            await _offer_bonus_quiz(update, context, chat_id, total_done)
 
 
 async def _send_old_quiz_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -734,7 +746,7 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info("bonus_yes blocked — max quizzes: chat_id=%s", chat_id)
         return
 
-    # Check if there's already an active unanswered bonus quiz (section 39A)
+    # Check if there's already an active unanswered bonus quiz
     active_bonus = db.get_active_bonus_quiz(chat_id, today)
     if active_bonus:
         # Resend existing unanswered bonus quiz instead of generating a new one
