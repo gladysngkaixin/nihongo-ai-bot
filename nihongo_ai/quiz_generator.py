@@ -77,20 +77,18 @@ SAFE_TOPICS = [
 
 def _pick_topic(recent_topics: list[str]) -> str:
     """Pick a topic that respects repetition rules."""
-    # Count recent topic usage
     topic_counts: dict[str, int] = {}
     for t in recent_topics:
         topic_counts[t] = topic_counts.get(t, 0) + 1
 
-    # Avoid consecutive same topic
     last_topic = recent_topics[0] if recent_topics else ""
 
     candidates = []
     for topic in SAFE_TOPICS:
         if topic == last_topic:
-            continue  # No consecutive repeat
+            continue
         if topic_counts.get(topic, 0) >= MAX_TOPIC_REPEAT_IN_14_DAYS:
-            continue  # Max 3 times in 14 days
+            continue
         candidates.append(topic)
 
     if not candidates:
@@ -187,15 +185,27 @@ IMPORTANT:
     return system_prompt, user_prompt
 
 
+def _clean_json_text(raw: str) -> str:
+    """Make model output more tolerant for JSON parsing."""
+    text = raw.strip()
+
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        text = text[start:end + 1]
+
+    return text.strip()
+
+
 def _parse_quiz_response(raw: str, date_str: str) -> Optional[Quiz]:
     """Parse the OpenAI JSON response into a Quiz object."""
     try:
-        # Clean potential markdown fences
-        text = raw.strip()
-        if text.startswith("```"):
-            # Remove first and last lines
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1])
+        text = _clean_json_text(raw)
         data = json.loads(text)
 
         correct = int(data["correct_option"])
@@ -222,7 +232,7 @@ def _parse_quiz_response(raw: str, date_str: str) -> Optional[Quiz]:
         )
         return quiz
     except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.error("Failed to parse quiz response: %s — raw: %s", e, raw[:200])
+        logger.warning("Main quiz parsing failed: %s — raw: %s", e, raw[:300])
         return None
 
 
@@ -233,7 +243,6 @@ def _parse_quiz_response(raw: str, date_str: str) -> Optional[Quiz]:
 def format_quiz_message(quiz: Quiz, date_str: str) -> str:
     """Format the quiz into the exact Telegram message structure."""
     dt = datetime.strptime(date_str, "%Y-%m-%d")
-    # Japanese day names
     day_names = ["月", "火", "水", "木", "金", "土", "日"]
     day_name = day_names[dt.weekday()]
 
@@ -336,7 +345,7 @@ def generate_quiz(date_str: Optional[str] = None,
         quiz = _parse_quiz_response(raw, date_str)
 
         if quiz is None:
-            logger.error("Quiz parsing failed, returning None")
+            logger.warning("Quiz parsing failed, returning None")
             return None
 
         quiz.is_fallback = is_fallback
@@ -344,31 +353,35 @@ def generate_quiz(date_str: Optional[str] = None,
         return quiz
 
     except Exception as e:
-        logger.error("OpenAI generation failed: %s", e)
+        logger.warning("OpenAI generation failed: %s", e)
         return None
 
 
 def generate_quiz_with_fallback(date_str: Optional[str] = None) -> Quiz:
     """
     Try to generate a full quiz. If it fails or times out,
-    generate a fallback mini quiz.
+    generate a fallback mini quiz and schedule a retry.
     """
     if date_str is None:
         date_str = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
 
-    # Try full quiz
     quiz = generate_quiz(date_str=date_str, is_fallback=False)
     if quiz is not None:
+        logger.info("Main quiz generation succeeded for %s", date_str)
         return quiz
 
-    logger.warning("Full quiz generation failed, trying fallback...")
+    logger.warning("Full quiz generation failed for %s, trying fallback...", date_str)
 
-    # Try fallback
     quiz = generate_quiz(date_str=date_str, is_fallback=True)
     if quiz is not None:
+        try:
+            from . import scheduler as sched
+            sched._schedule_fallback_retry(date_str)
+        except Exception as e:
+            logger.warning("Could not schedule fallback retry for %s: %s", date_str, e)
+
         return quiz
 
-    # Last resort: hardcoded fallback
     logger.error("All generation attempts failed, using hardcoded fallback")
     return _hardcoded_fallback(date_str)
 
@@ -382,10 +395,7 @@ def _parse_bonus_response(raw: str, bonus_id: str, date_str: str,
                           quiz_sequence_for_day: int) -> Optional[BonusQuiz]:
     """Parse the OpenAI JSON response into a BonusQuiz object."""
     try:
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1])
+        text = _clean_json_text(raw)
         data = json.loads(text)
 
         correct = int(data["correct_option"])
@@ -416,12 +426,12 @@ def _parse_bonus_response(raw: str, bonus_id: str, date_str: str,
         )
         return bonus
     except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.error("Failed to parse bonus quiz response: %s — raw: %s", e, raw[:200])
+        logger.warning("Failed to parse bonus quiz response: %s — raw: %s", e, raw[:300])
         return None
 
 
 def format_bonus_quiz_message(bonus: BonusQuiz) -> str:
-    """Format a bonus quiz into the shorter Telegram message structure (section 33)."""
+    """Format a bonus quiz into the shorter Telegram message structure."""
     msg = (
         f"✨ Bonus Quiz\n"
         f"📖 読解（Practice）\n\n"
@@ -453,14 +463,45 @@ def format_bonus_explanation(bonus: BonusQuiz, chosen: int) -> str:
     return msg
 
 
+def _hardcoded_bonus_fallback(date_str: str, chat_id: int,
+                              quiz_type: str,
+                              quiz_sequence_for_day: int) -> BonusQuiz:
+    """Absolute last-resort fallback bonus quiz."""
+    bonus_id = f"{date_str}_{quiz_type}"
+
+    bonus = BonusQuiz(
+        bonus_id=bonus_id,
+        date=date_str,
+        quiz_type=quiz_type,
+        quiz_sequence_for_day=quiz_sequence_for_day,
+        chat_id=chat_id,
+        passage="今日(きょう)、図書館(としょかん)へ行(い)きました。静(しず)かな部屋(へや)で本(ほん)を読(よ)みました。そのあと、近(ちか)くの店(みせ)でジュースを買(か)いました。",
+        question="どこで本(ほん)を読(よ)みましたか？",
+        option1="学校(がっこう)",
+        option2="公園(こうえん)",
+        option3="図書館(としょかん)",
+        option4="駅(えき)",
+        correct_option=3,
+        explanation_ja="本文(ほんぶん)に「図書館(としょかん)へ行(い)きました。静(しず)かな部屋(へや)で本(ほん)を読(よ)みました」とあります。だから、答(こた)えは図書館(としょかん)です。",
+        explanation_en="The passage says the person went to the library and read there, so the answer is the library.",
+        topic_label="図書館",
+        topic_label_en="library",
+        is_answered=False,
+        answered_at="",
+        chosen_option=0,
+        created_at=datetime.now(TIMEZONE).isoformat(),
+    )
+    bonus.full_message = format_bonus_quiz_message(bonus)
+    return bonus
+
+
 def generate_bonus_quiz(date_str: str, chat_id: int,
                         quiz_type: str, quiz_sequence_for_day: int) -> Optional[BonusQuiz]:
     """
     Generate a bonus quiz for a user.
-    Bonus quizzes ignore topic rotation rules (section 40).
-    Returns BonusQuiz on success, None on failure.
+    Bonus quizzes ignore topic rotation rules.
+    Falls back to a hardcoded bonus quiz if generation fails.
     """
-    # Pick a random topic — bonus quizzes ignore rotation rules (section 40)
     topic = random.choice(SAFE_TOPICS)
     question_type = _next_question_type()
     jlpt_level = _determine_jlpt_level(chat_id)
@@ -495,16 +536,20 @@ def generate_bonus_quiz(date_str: str, chat_id: int,
         )
 
         if bonus is None:
-            logger.error("Bonus quiz parsing failed")
-            return None
+            logger.warning("Bonus quiz parsing failed, using hardcoded fallback")
+            return _hardcoded_bonus_fallback(
+                date_str, chat_id, quiz_type, quiz_sequence_for_day
+            )
 
         bonus.full_message = format_bonus_quiz_message(bonus)
         logger.info("bonus_quiz_generated: bonus_id=%s chat_id=%s", bonus_id, chat_id)
         return bonus
 
     except Exception as e:
-        logger.error("Bonus quiz generation failed: %s", e)
-        return None
+        logger.warning("Bonus quiz generation failed: %s — using hardcoded fallback", e)
+        return _hardcoded_bonus_fallback(
+            date_str, chat_id, quiz_type, quiz_sequence_for_day
+        )
 
 
 def _hardcoded_fallback(date_str: str) -> Quiz:
