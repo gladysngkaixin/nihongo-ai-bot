@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta
-from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -28,14 +27,10 @@ from .models import Quiz, BonusQuiz
 from . import database as db
 from . import quiz_generator as qg
 
-# ---------------------------------------------------------------------------
-# Anti-spam: per-user last command timestamp
-# ---------------------------------------------------------------------------
 _last_command: dict[int, float] = {}
 
 
 def _is_spam(chat_id: int) -> bool:
-    """Return True if the user sent a command within the cooldown window."""
     now = time.time()
     last = _last_command.get(chat_id, 0)
     if now - last < COMMAND_COOLDOWN_SECONDS:
@@ -44,16 +39,11 @@ def _is_spam(chat_id: int) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Helper: get today's date string
-# ---------------------------------------------------------------------------
-
 def _today_str() -> str:
     return datetime.now(TIMEZONE).strftime("%Y-%m-%d")
 
 
 def _build_answer_keyboard() -> InlineKeyboardMarkup:
-    """Build the 1/2/3/4 inline keyboard."""
     buttons = [
         InlineKeyboardButton("1", callback_data="answer_1"),
         InlineKeyboardButton("2", callback_data="answer_2"),
@@ -64,7 +54,6 @@ def _build_answer_keyboard() -> InlineKeyboardMarkup:
 
 
 def _build_bonus_offer_keyboard() -> InlineKeyboardMarkup:
-    """Build the Yes/No inline keyboard for bonus quiz offer."""
     buttons = [
         InlineKeyboardButton("Yes", callback_data="bonus_yes"),
         InlineKeyboardButton("No", callback_data="bonus_no"),
@@ -72,13 +61,8 @@ def _build_bonus_offer_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([buttons])
 
 
-async def _send_bonus_quiz_to_user(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    bonus: BonusQuiz,
-) -> None:
-    """Send a bonus quiz message to the user."""
+async def _send_bonus_quiz_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                   chat_id: int, bonus: BonusQuiz) -> None:
     try:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -90,20 +74,15 @@ async def _send_bonus_quiz_to_user(
         logger.error("Failed to send bonus quiz to chat_id=%s: %s", chat_id, e)
 
 
-async def _offer_bonus_quiz(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    quizzes_done: int,
-) -> None:
-    """Send the bonus quiz offer message based on how many quizzes are done today."""
+async def _offer_bonus_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                            chat_id: int, quizzes_done: int) -> None:
     reply_func = _get_reply_func(update)
     if quizzes_done == 1:
         msg = (
             "📌 You've already answered today's quiz! "
             "Do you want to do another quiz? Happy to generate a shorter one for you!"
         )
-    else:  # quizzes_done == 2
+    else:
         msg = (
             "📌 Wow, you've completed 2 quizzes today! "
             "Do you want to do another one? Happy to generate a 3rd quiz for you!"
@@ -111,17 +90,12 @@ async def _offer_bonus_quiz(
     await reply_func(msg, reply_markup=_build_bonus_offer_keyboard())
 
 
-# ---------------------------------------------------------------------------
-# Difficulty adaptation
-# ---------------------------------------------------------------------------
-
 def _adapt_difficulty(chat_id: int) -> None:
-    """Adjust user difficulty based on recent accuracy."""
     recent = db.get_user_answers_recent(chat_id, limit=DIFFICULTY_WINDOW)
     if len(recent) < DIFFICULTY_WINDOW:
         return
 
-    correct = sum(1 for a in recent if a.is_correct)
+    correct = sum(1 for a in recent if a["is_correct"])
     accuracy = correct / len(recent)
 
     if accuracy > HIGH_ACCURACY_THRESHOLD:
@@ -134,12 +108,7 @@ def _adapt_difficulty(chat_id: int) -> None:
         db.update_user_difficulty(chat_id, "mixed")
 
 
-# ---------------------------------------------------------------------------
-# Streak management
-# ---------------------------------------------------------------------------
-
 def _update_streak(chat_id: int, quiz_date: str) -> None:
-    """Update the user's streak after answering."""
     user = db.get_user(chat_id)
     if not user:
         return
@@ -155,16 +124,8 @@ def _update_streak(chat_id: int, quiz_date: str) -> None:
     db.update_streak(chat_id, new_streak)
 
 
-# ---------------------------------------------------------------------------
-# Send quiz to a single user
-# ---------------------------------------------------------------------------
-
-async def send_quiz_to_user(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    quiz: Quiz,
-) -> bool:
-    """Send a quiz message to a user. Returns True on success."""
+async def send_quiz_to_user(context: ContextTypes.DEFAULT_TYPE,
+                            chat_id: int, quiz: Quiz) -> bool:
     try:
         await context.bot.send_message(
             chat_id=chat_id,
@@ -178,12 +139,7 @@ async def send_quiz_to_user(
         return False
 
 
-# ---------------------------------------------------------------------------
-# /start command
-# ---------------------------------------------------------------------------
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /start — welcome message + send today's quiz immediately."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -224,12 +180,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await send_quiz_to_user(context, chat_id, quiz)
 
 
-# ---------------------------------------------------------------------------
-# /today command
-# ---------------------------------------------------------------------------
-
 async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /today — resend today's quiz or show bonus offer."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -257,11 +208,8 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         active_bonus = db.get_active_bonus_quiz(chat_id, today)
         if active_bonus:
             await _send_bonus_quiz_to_user(update, context, chat_id, active_bonus)
-            logger.info(
-                "/today resent active bonus quiz: bonus_id=%s chat_id=%s",
-                active_bonus.bonus_id,
-                chat_id,
-            )
+            logger.info("/today resent active bonus quiz: bonus_id=%s chat_id=%s",
+                        active_bonus.bonus_id, chat_id)
         else:
             await _offer_bonus_quiz(update, context, chat_id, total_done)
             logger.info("/today from chat_id=%s — offering bonus quiz", chat_id)
@@ -276,12 +224,7 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info("/today from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /stats command
-# ---------------------------------------------------------------------------
-
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stats — show user statistics."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -313,12 +256,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info("/stats from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /level command
-# ---------------------------------------------------------------------------
-
 async def level_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /level — show current difficulty level."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -345,12 +283,7 @@ async def level_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info("/level from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /pause command
-# ---------------------------------------------------------------------------
-
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /pause — stop receiving daily quizzes."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -368,12 +301,7 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.info("/pause from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /resume command
-# ---------------------------------------------------------------------------
-
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /resume — resume daily quizzes."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -391,12 +319,7 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     logger.info("/resume from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /reminders command
-# ---------------------------------------------------------------------------
-
 async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /reminders on|off — toggle reminders."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -405,6 +328,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     db.update_last_interaction(chat_id)
+
     text = (update.message.text or "").strip().lower()
 
     if text == "/reminders on":
@@ -425,12 +349,7 @@ async def reminders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
 
 
-# ---------------------------------------------------------------------------
-# /help command
-# ---------------------------------------------------------------------------
-
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /help — show available commands."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -459,12 +378,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     logger.info("/help from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /delete_my_data command
-# ---------------------------------------------------------------------------
-
 async def delete_my_data_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /delete_my_data — delete all user data."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -482,18 +396,8 @@ async def delete_my_data_command(update: Update, context: ContextTypes.DEFAULT_T
     logger.info("/delete_my_data from chat_id=%s", chat_id)
 
 
-# ---------------------------------------------------------------------------
-# /reset_today (admin only)
-# ---------------------------------------------------------------------------
-
 async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /reset_today — admin-only: generate a fresh quiz preview for the admin.
-
-    This command generates a brand-new quiz preview and sends it only to the admin.
-    It does NOT modify the globally stored daily quiz, does NOT delete any
-    answer records, and does NOT affect any other user's state or bonus quizzes.
-    The preview is review-only and is not answerable.
-    """
+    """Admin-only true reset for today's quizzes."""
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -507,37 +411,45 @@ async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     today = _today_str()
 
-    await update.message.reply_text("⏳ Generating a fresh quiz preview for you...")
-    logger.info("/reset_today preview requested by admin chat_id=%s", chat_id)
+    await update.message.reply_text(
+        "🔄 Performing a full reset for today's quizzes...\n"
+        "This will delete today's stored quiz, answers, bonus quizzes, and regenerate a fresh real quiz."
+    )
+    logger.info("/reset_today requested by admin chat_id=%s", chat_id)
+
+    db.delete_quiz_for_date(today)
+    db.delete_bonus_quizzes_for_date(today)
 
     quiz = qg.generate_quiz_with_fallback(today)
+    db.save_today_quiz(quiz)
+
+    await send_quiz_to_user(context, chat_id, quiz)
+
+    active_users = db.get_active_users()
+    sent_count = 0
+    for user in active_users:
+        if user.chat_id == chat_id:
+            continue
+        success = await send_quiz_to_user(context, user.chat_id, quiz)
+        if success:
+            sent_count += 1
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text=quiz.full_message,
+        text=(
+            f"✅ Today's quiz has been fully reset and regenerated.\n"
+            f"It has been sent to you and {sent_count} other active user(s)."
+        ),
     )
+    logger.info("reset_today complete: sent to admin + %s active users", sent_count)
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text="✅ A fresh quiz preview has been generated and sent only to you. This preview is for review only.",
-    )
-    logger.info("/reset_today complete: preview sent to admin chat_id=%s only", chat_id)
-
-
-# ---------------------------------------------------------------------------
-# Callback query handler (button presses: answer_1, answer_2, etc.)
-# ---------------------------------------------------------------------------
 
 async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle inline button presses for quiz answers."""
     query = update.callback_query
-    if not query or not query.data:
+    if not query or not query.data or not query.message:
         return
 
     await query.answer()
-
-    if not query.message:
-        return
 
     chat_id = query.message.chat_id
     db.update_last_interaction(chat_id)
@@ -557,12 +469,7 @@ async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await _process_answer(update, context, chat_id, chosen)
 
 
-# ---------------------------------------------------------------------------
-# Text message handler (typed 1/2/3/4)
-# ---------------------------------------------------------------------------
-
 async def text_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle typed answers: 1, 2, 3, or 4."""
     if not update.message or not update.message.text or not update.effective_chat:
         return
 
@@ -579,17 +486,8 @@ async def text_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await _process_answer(update, context, chat_id, chosen)
 
 
-# ---------------------------------------------------------------------------
-# Core answer processing
-# ---------------------------------------------------------------------------
-
-async def _process_answer(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    chosen: int,
-) -> None:
-    """Process a user's answer to a quiz."""
+async def _process_answer(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          chat_id: int, chosen: int) -> None:
     today = _today_str()
     now = datetime.now(TIMEZONE)
 
@@ -605,11 +503,8 @@ async def _process_answer(
             if any(b.is_answered for b in completed_bonuses):
                 reply_func = _get_reply_func(update)
                 await reply_func("📌 This quiz has already been completed.")
-                logger.info(
-                    "Stale bonus button press ignored: chat_id=%s date=%s",
-                    chat_id,
-                    today,
-                )
+                logger.info("Stale bonus button press ignored: chat_id=%s date=%s",
+                            chat_id, today)
             else:
                 logger.info("Duplicate answer ignored: chat_id=%s date=%s", chat_id, today)
         return
@@ -624,14 +519,7 @@ async def _process_answer(
     if yesterday_quiz:
         existing_yesterday = db.get_answer(chat_id, yesterday)
         if not existing_yesterday:
-            await _record_and_respond(
-                update,
-                context,
-                chat_id,
-                yesterday_quiz,
-                chosen,
-                yesterday,
-            )
+            await _record_and_respond(update, context, chat_id, yesterday_quiz, chosen, yesterday)
             return
         else:
             await _send_old_quiz_message(update, context, chat_id)
@@ -641,15 +529,9 @@ async def _process_answer(
     await reply_func("📭 No quiz available right now. Please wait for the next one at 9:00am SGT!")
 
 
-async def _record_and_respond(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    quiz: Quiz,
-    chosen: int,
-    quiz_date: str,
-) -> None:
-    """Record the answer and send explanation."""
+async def _record_and_respond(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                              chat_id: int, quiz: Quiz, chosen: int,
+                              quiz_date: str) -> None:
     is_correct = chosen == quiz.correct_option
 
     recorded = db.mark_answer(chat_id, quiz_date, chosen, is_correct)
@@ -664,13 +546,8 @@ async def _record_and_respond(
     reply_func = _get_reply_func(update)
     await reply_func(explanation)
 
-    logger.info(
-        "Answer evaluated: chat_id=%s date=%s chosen=%s correct=%s",
-        chat_id,
-        quiz_date,
-        chosen,
-        is_correct,
-    )
+    logger.info("Answer evaluated: chat_id=%s date=%s chosen=%s correct=%s",
+                chat_id, quiz_date, chosen, is_correct)
 
     today = _today_str()
     if quiz_date == today:
@@ -679,12 +556,8 @@ async def _record_and_respond(
             await _offer_bonus_quiz(update, context, chat_id, total_done)
 
 
-async def _send_old_quiz_message(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-) -> None:
-    """Send the 'old quiz' message when user tries to answer a past quiz."""
+async def _send_old_quiz_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                 chat_id: int) -> None:
     now = datetime.now(TIMEZONE)
     day_names = ["月", "火", "水", "木", "金", "土", "日"]
     day_name = day_names[now.weekday()]
@@ -699,7 +572,6 @@ async def _send_old_quiz_message(
 
 
 def _get_reply_func(update: Update):
-    """Get the appropriate reply function based on update type."""
     if update.callback_query and update.callback_query.message:
         return update.callback_query.message.reply_text
     if update.message:
@@ -711,12 +583,7 @@ def _get_reply_func(update: Update):
     return noop
 
 
-# ---------------------------------------------------------------------------
-# Bonus quiz callback handler (bonus_yes / bonus_no)
-# ---------------------------------------------------------------------------
-
 async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle bonus_yes / bonus_no inline button presses."""
     query = update.callback_query
     if not query or not query.data or not query.message:
         return
@@ -740,6 +607,18 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query.data != "bonus_yes":
         return
 
+    # Duplicate guard BEFORE generation
+    active_bonus = db.get_active_bonus_quiz(chat_id, today)
+    if active_bonus:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=active_bonus.full_message,
+            reply_markup=_build_answer_keyboard(),
+        )
+        logger.info("bonus_yes resent existing bonus: bonus_id=%s chat_id=%s",
+                    active_bonus.bonus_id, chat_id)
+        return
+
     total_done = db.count_quizzes_today(chat_id, today)
     if total_done >= MAX_DAILY_QUIZZES:
         await query.message.reply_text(
@@ -748,20 +627,6 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "See you tomorrow again! 📘✨"
         )
         logger.info("bonus_yes blocked — max quizzes: chat_id=%s", chat_id)
-        return
-
-    active_bonus = db.get_active_bonus_quiz(chat_id, today)
-    if active_bonus:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=active_bonus.full_message,
-            reply_markup=_build_answer_keyboard(),
-        )
-        logger.info(
-            "bonus_yes resent existing bonus: bonus_id=%s chat_id=%s",
-            active_bonus.bonus_id,
-            chat_id,
-        )
         return
 
     bonus_quizzes_today = db.get_bonus_quizzes_for_day(chat_id, today)
@@ -799,24 +664,12 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text=bonus.full_message,
         reply_markup=_build_answer_keyboard(),
     )
-    logger.info(
-        "bonus_quiz_generated and sent: bonus_id=%s chat_id=%s",
-        bonus.bonus_id,
-        chat_id,
-    )
+    logger.info("bonus_quiz_generated and sent: bonus_id=%s chat_id=%s",
+                bonus.bonus_id, chat_id)
 
 
-# ---------------------------------------------------------------------------
-# Bonus answer processing
-# ---------------------------------------------------------------------------
-
-async def _process_bonus_answer(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    chosen: int,
-) -> None:
-    """Process a user's answer to an active bonus quiz."""
+async def _process_bonus_answer(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                chat_id: int, chosen: int) -> None:
     today = _today_str()
     active_bonus = db.get_active_bonus_quiz(chat_id, today)
 
@@ -832,13 +685,8 @@ async def _process_bonus_answer(
     reply_func = _get_reply_func(update)
     await reply_func(explanation)
 
-    logger.info(
-        "bonus_quiz_answered: bonus_id=%s chat_id=%s chosen=%s correct=%s",
-        active_bonus.bonus_id,
-        chat_id,
-        chosen,
-        is_correct,
-    )
+    logger.info("bonus_quiz_answered: bonus_id=%s chat_id=%s chosen=%s correct=%s",
+                active_bonus.bonus_id, chat_id, chosen, is_correct)
 
     total_done = db.count_quizzes_today(chat_id, today)
     if total_done >= MAX_DAILY_QUIZZES:
