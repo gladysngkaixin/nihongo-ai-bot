@@ -1,7 +1,7 @@
 """
 Nihongo.AI — Quiz Generator Module
 
-Uses OpenAI API to generate daily Japanese reading comprehension passages
+Uses Anthropic Claude API to generate daily Japanese reading comprehension passages
 with questions, options, and explanations.
 """
 
@@ -13,10 +13,10 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from openai import OpenAI
+import anthropic
 
 from .config import (
-    OPENAI_MODEL,
+    ANTHROPIC_MODEL,
     GENERATION_TIMEOUT,
     PASSAGE_MIN_CHARS,
     PASSAGE_MAX_CHARS,
@@ -32,20 +32,18 @@ from .models import Quiz, BonusQuiz
 from . import database as db
 
 # ---------------------------------------------------------------------------
-# OpenAI client — lazily initialised
+# Anthropic client — lazily initialised
 # ---------------------------------------------------------------------------
-# B1 FIX: previously created at module load with client = OpenAI().
-# If OPENAI_API_KEY is missing, some SDK versions raise at construction time
-# before bot.py's startup validation can run and give a clear error.
-# Lazy init ensures bot.py always gets to run its OPENAI_API_KEY check first.
-_openai_client: Optional[OpenAI] = None
+# Lazy init ensures bot.py always gets to run its ANTHROPIC_API_KEY check
+# first before the client is constructed.
+_anthropic_client: Optional[anthropic.Anthropic] = None
 
-def _get_client() -> OpenAI:
-    """Return the singleton OpenAI client, creating it on first use."""
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = OpenAI()
-    return _openai_client
+def _get_client() -> anthropic.Anthropic:
+    """Return the singleton Anthropic client, creating it on first use."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.Anthropic()
+    return _anthropic_client
 
 # ---------------------------------------------------------------------------
 # Question type rotation
@@ -146,7 +144,7 @@ def _build_generation_prompt(
     min_chars: int,
     max_chars: int,
 ) -> tuple[str, str]:
-    """Build the system+user prompt for OpenAI. Returns (system_prompt, user_prompt)."""
+    """Build the system+user prompt for Claude API. Returns (system_prompt, user_prompt)."""
 
     question_type_instruction = {
         "main_idea": "Ask about the main idea or theme of the passage.",
@@ -230,7 +228,7 @@ def _clean_json_text(raw: str) -> str:
 
 
 def _parse_quiz_response(raw: str, date_str: str) -> Optional[Quiz]:
-    """Parse the OpenAI JSON response into a Quiz object."""
+    """Parse the Claude API JSON response into a Quiz object."""
     try:
         text = _clean_json_text(raw)
         data = json.loads(text)
@@ -453,18 +451,16 @@ def generate_quiz(date_str: Optional[str] = None,
         logger.info("Generating quiz: topic=%s type=%s level=%s fallback=%s",
                      topic, question_type, jlpt_level, is_fallback)
 
-        response = _get_client().chat.completions.create(
-            model=OPENAI_MODEL,
+        response = _get_client().messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=2000,
+            system=system_prompt,
             messages=[
-                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.8,
-            max_tokens=2000,
-            timeout=GENERATION_TIMEOUT,
         )
 
-        raw = response.choices[0].message.content or ""
+        raw = response.content[0].text if response.content else ""
 
         quiz = _parse_quiz_response(raw, date_str)
         if quiz is None or not _validate_quiz(quiz, min_chars):
@@ -477,7 +473,7 @@ def generate_quiz(date_str: Optional[str] = None,
         return quiz
 
     except Exception as e:
-        logger.warning("OpenAI generation failed: %s", e)
+        logger.warning("Claude API generation failed: %s", e)
         return None
 
 
@@ -488,7 +484,7 @@ def generate_quiz_with_fallback(date_str: Optional[str] = None) -> Quiz:
 
     BUG FIX #2 (part B): Added retry loop (3 attempts) before giving up on
     full quiz generation, and 2 attempts on fallback size. This prevents a
-    single transient OpenAI timeout from immediately writing the hardcoded
+    single transient Claude API timeout from immediately writing the hardcoded
     fallback to the DB.
     """
     if date_str is None:
@@ -528,7 +524,7 @@ def generate_quiz_with_fallback(date_str: Optional[str] = None) -> Quiz:
 def _parse_bonus_response(raw: str, bonus_id: str, date_str: str,
                           chat_id: int, quiz_type: str,
                           quiz_sequence_for_day: int) -> Optional[BonusQuiz]:
-    """Parse the OpenAI JSON response into a BonusQuiz object."""
+    """Parse the Claude API JSON response into a BonusQuiz object."""
     try:
         text = _clean_json_text(raw)
         data = json.loads(text)
@@ -671,18 +667,16 @@ def generate_bonus_quiz(date_str: str, chat_id: int,
             logger.info("Generating bonus quiz: bonus_id=%s topic=%s type=%s attempt=%d",
                          bonus_id, topic, question_type, attempt)
 
-            response = _get_client().chat.completions.create(
-                model=OPENAI_MODEL,
+            response = _get_client().messages.create(
+                model=ANTHROPIC_MODEL,
+                max_tokens=1500,
+                system=system_prompt,
                 messages=[
-                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                temperature=0.8,
-                max_tokens=1500,
-                timeout=GENERATION_TIMEOUT,
             )
 
-            raw = response.choices[0].message.content or ""
+            raw = response.content[0].text if response.content else ""
             bonus = _parse_bonus_response(
                 raw, bonus_id, date_str, chat_id, quiz_type, quiz_sequence_for_day
             )
@@ -709,7 +703,7 @@ def generate_bonus_quiz(date_str: str, chat_id: int,
 # BUG FIX #2 (part A): Hardcoded fallback pool
 # ---------------------------------------------------------------------------
 # Previously a SINGLE hardcoded passage was always used, so every day the
-# bot couldn't reach OpenAI, users got the exact same 公園 passage.
+# bot couldn't reach the Claude API, users got the exact same 公園 passage.
 # Now we have a pool of varied passages. The pool is indexed by date so the
 # same date always returns the same quiz (idempotent), but different days
 # get different passages.

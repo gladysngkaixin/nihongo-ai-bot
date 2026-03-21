@@ -46,16 +46,13 @@ if _raw_admin_ids:
             pass
 
 # ---------------------------------------------------------------------------
-# OpenAI
+# Anthropic (Claude API)
 # ---------------------------------------------------------------------------
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-
-# BUG FIX #1: Increased from 15 (and even 30) to 90 seconds.
-# Generating a 250-300 char Japanese passage with furigana via OpenAI
-# routinely exceeds 15-30s, causing silent timeouts → hardcoded fallback
-# → same passage sent every day. 90s gives enough buffer for API slowdowns
-# without letting the bot hang for 2 full minutes before retrying.
+ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+# claude-haiku-4-5-20251001 is the cheapest model — ideal for quiz generation.
+# At $1/MTok input and $5/MTok output, the entire bot costs ~$0.50/month
+# for 5 users. Upgrade to claude-sonnet-4-6 if you want higher quality.
+ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 GENERATION_TIMEOUT: int = 90
 
 # ---------------------------------------------------------------------------

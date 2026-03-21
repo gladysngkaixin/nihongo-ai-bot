@@ -20,7 +20,7 @@ from telegram.ext import (
     filters,
 )
 
-from .config import TELEGRAM_BOT_TOKEN, OPENAI_API_KEY, logger
+from .config import TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY, logger
 from . import database as db
 from . import handlers
 from .scheduler import setup_scheduler
@@ -78,13 +78,13 @@ async def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN is not set. Exiting.")
         sys.exit(1)
 
-    # D2 FIX: validate OPENAI_API_KEY at startup. Previously the bot started
+    # D2 FIX: validate ANTHROPIC_API_KEY at startup. Previously the bot started
     # successfully with a missing or expired key, then silently sent hardcoded
     # fallback quizzes every day with no error message — exactly the failure
     # mode experienced in production. Failing fast here makes the problem
     # immediately visible in Railway logs.
-    if not OPENAI_API_KEY:
-        logger.error("OPENAI_API_KEY is not set. Exiting.")
+    if not ANTHROPIC_API_KEY:
+        logger.error("ANTHROPIC_API_KEY is not set. Exiting.")
         sys.exit(1)
 
     db.init_db()
