@@ -398,6 +398,56 @@ def format_quiz_message(quiz: Quiz, date_str: str) -> str:
     return msg
 
 
+def format_quiz_message_split(quiz: Quiz, date_str: str) -> tuple[str, str]:
+    """
+    Split the quiz into two messages so the inline keyboard is never lost.
+
+    Telegram silently drops inline keyboards on messages over ~4096 chars.
+    Furigana passages easily exceed this when options are included.
+    Fix: send the passage as message 1, the question + options as message 2.
+    The keyboard is attached only to message 2, which is always short.
+
+    Returns (passage_msg, question_msg).
+    """
+    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    day_names = ["月", "火", "水", "木", "金", "土", "日"]
+    day_name = day_names[dt.weekday()]
+
+    header = f"📅 {dt.year}年{dt.month}月{dt.day}日（{day_name}曜日）"
+    topic_line = f"🏷️ テーマ：{quiz.topic_label}"
+    level_line = f"📖 読解（N5〜N4）"
+
+    fallback_prefix = ""
+    if quiz.is_fallback:
+        fallback_prefix = (
+            "🙇 Sorry — I couldn't generate today's full passage just now.\n"
+            "Here's a quick mini one to keep your streak going:\n\n"
+        )
+
+    passage_msg = (
+        f"{fallback_prefix}"
+        f"{header}\n"
+        f"{topic_line}\n"
+        f"{level_line}\n\n"
+        f"{quiz.passage}"
+    )
+
+    question_msg = (
+        f"❓ 質問\n"
+        f"{quiz.question}\n\n"
+        f"🅰️ 1. {quiz.option1}\n"
+        f"🅱️ 2. {quiz.option2}\n"
+        f"🅲️ 3. {quiz.option3}\n"
+        f"🅳️ 4. {quiz.option4}\n\n"
+        f"👉 答えを選んでね：（1 / 2 / 3 / 4 ボタン）"
+    )
+
+    if quiz.is_fallback:
+        question_msg += "\n\nI'll try again in 10 minutes and send the full version."
+
+    return passage_msg, question_msg
+
+
 def format_explanation(quiz: Quiz, chosen: int) -> str:
     """Format the explanation message after answering."""
     is_correct = chosen == quiz.correct_option

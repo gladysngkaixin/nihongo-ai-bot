@@ -158,9 +158,9 @@ async def _notify_admins_fallback(date_str: str) -> None:
         f"Quiz generation failed for {date_str}.\n"
         f"A hardcoded fallback passage was sent to all users.\n\n"
         f"Please check:\n"
-        f"• Railway logs for OpenAI error details\n"
-        f"• That OPENAI_API_KEY is valid and has quota\n"
-        f"• OpenAI API status at status.openai.com\n\n"
+        f"• Railway logs for Claude API error details\n"
+        f"• That ANTHROPIC_API_KEY is valid and has credits\n"
+        f"• Anthropic API status at status.anthropic.com\n\n"
         f"The bot will retry with a full quiz in 10 minutes."
     )
     for admin_id in ADMIN_CHAT_IDS:
@@ -275,9 +275,12 @@ async def _fallback_retry_job(date_str: str) -> None:
                 text="📖 Good news! Here's the full version of today's passage:",
             )
             from .handlers import _build_answer_keyboard
+            from .quiz_generator import format_quiz_message_split
+            passage_msg, question_msg = format_quiz_message_split(quiz, quiz.date)
+            await _app.bot.send_message(chat_id=chat_id, text=passage_msg)
             await _app.bot.send_message(
                 chat_id=chat_id,
-                text=quiz.full_message,
+                text=question_msg,
                 reply_markup=_build_answer_keyboard(),
             )
         except Exception as e:
