@@ -1,3 +1,9 @@
 python-telegram-bot==21.6
-openai>=1.30.0
+# A1 FIX: openai 2.x introduced breaking API changes (client.chat.completions
+# and the timeout parameter changed). The codebase uses 1.x patterns so we
+# must stay within 1.x. The upper bound <2.0.0 prevents Railway from silently
+# installing 2.x on a fresh deploy and breaking all quiz generation.
+openai>=1.30.0,<2.0.0
 APScheduler>=3.10.0,<4.0
+# D1 FIX: auto-loads .env file for local development
+python-dotenv>=1.0.0

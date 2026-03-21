@@ -5,3 +5,11 @@ builder = "nixpacks"
 startCommand = "python run.py"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+# D1 FIX: Pin Python version to 3.11.
+# Without this Railway's nixpacks builder chooses automatically and may
+# select 3.13 (which has known issues with python-telegram-bot==21.6)
+# or 3.9 (which breaks the `list[str] | None` type hint syntax).
+# 3.11 is the stable, well-tested target for all dependencies.
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.11"
