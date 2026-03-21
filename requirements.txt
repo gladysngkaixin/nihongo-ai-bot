@@ -1,6 +1,7 @@
 python-telegram-bot==21.6
 # Switched from OpenAI to Anthropic Claude API.
 # claude-haiku-4-5-20251001 costs ~$0.50/month for 5 users.
+# anthropic SDK for Claude API quiz generation
 anthropic>=0.40.0
 APScheduler>=3.10.0,<4.0
 # D1 FIX: auto-loads .env file for local development
