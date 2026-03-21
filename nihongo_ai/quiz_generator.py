@@ -628,6 +628,34 @@ def format_bonus_quiz_message(bonus: BonusQuiz) -> str:
     return msg
 
 
+def format_bonus_quiz_message_split(bonus: BonusQuiz) -> tuple[str, str]:
+    """
+    Split the bonus quiz into two messages so the inline keyboard is never lost.
+
+    Message 1 — passage only (header + passage text). No keyboard.
+    Message 2 — question + options + prompt. Keyboard attached here.
+
+    Returns (passage_msg, question_msg).
+    """
+    passage_msg = (
+        f"✨ Bonus Quiz\n"
+        f"📖 読解（Practice）\n\n"
+        f"{bonus.passage}"
+    )
+
+    question_msg = (
+        f"❓質問\n"
+        f"{bonus.question}\n\n"
+        f"🅰️ 1. {bonus.option1}\n"
+        f"🅱️ 2. {bonus.option2}\n"
+        f"🅲️ 3. {bonus.option3}\n"
+        f"🅳️ 4. {bonus.option4}\n\n"
+        f"👉 答えを選んでね：（1 / 2 / 3 / 4 ボタン）"
+    )
+
+    return passage_msg, question_msg
+
+
 def format_bonus_explanation(bonus: BonusQuiz, chosen: int) -> str:
     """Format the explanation message after answering a bonus quiz."""
     is_correct = chosen == bonus.correct_option

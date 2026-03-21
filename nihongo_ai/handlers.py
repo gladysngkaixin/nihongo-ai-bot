@@ -26,7 +26,7 @@ from .config import (
 from .models import Quiz, BonusQuiz
 from . import database as db
 from . import quiz_generator as qg
-from .quiz_generator import format_quiz_message_split
+from .quiz_generator import format_quiz_message_split, format_bonus_quiz_message_split
 
 _last_command: dict[int, float] = {}
 
@@ -65,12 +65,11 @@ def _build_bonus_offer_keyboard() -> InlineKeyboardMarkup:
 async def _send_bonus_quiz_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                    chat_id: int, bonus: BonusQuiz) -> None:
     try:
-        # Bonus passages are shorter but we split anyway for consistency
-        # and to guarantee the keyboard always appears
-        await context.bot.send_message(chat_id=chat_id, text=bonus.full_message)
+        passage_msg, question_msg = format_bonus_quiz_message_split(bonus)
+        await context.bot.send_message(chat_id=chat_id, text=passage_msg)
         await context.bot.send_message(
             chat_id=chat_id,
-            text="👉 答えを選んでね：（1 / 2 / 3 / 4 ボタン）",
+            text=question_msg,
             reply_markup=_build_answer_keyboard(),
         )
         logger.info("Bonus quiz sent: bonus_id=%s chat_id=%s", bonus.bonus_id, chat_id)
@@ -497,11 +496,16 @@ async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if quiz is None:
         quiz = qg._hardcoded_fallback(today)
 
-    # Send to admin only, no answer buttons (preview only).
+    # Send to admin only (preview only).
     # Split into two messages so the long furigana passage doesn't get truncated.
+    # Keyboard is included so admin can verify the full flow looks correct.
     passage_msg, question_msg = format_quiz_message_split(quiz, quiz.date)
     await context.bot.send_message(chat_id=chat_id, text=passage_msg)
-    await context.bot.send_message(chat_id=chat_id, text=question_msg)
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=question_msg,
+        reply_markup=_build_answer_keyboard(),
+    )
     await context.bot.send_message(
         chat_id=chat_id,
         text="✅ Fresh quiz preview generated and sent only to you. This is for review only.",
@@ -689,10 +693,11 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     active_bonus = db.get_active_bonus_quiz(chat_id, today)
     # H5 FIX: explicit date guard for consistency with today_command and start_command
     if active_bonus and active_bonus.date == today:
-        await context.bot.send_message(chat_id=chat_id, text=active_bonus.full_message)
+        passage_msg, question_msg = format_bonus_quiz_message_split(active_bonus)
+        await context.bot.send_message(chat_id=chat_id, text=passage_msg)
         await context.bot.send_message(
             chat_id=chat_id,
-            text="👉 答えを選んでね：（1 / 2 / 3 / 4 ボタン）",
+            text=question_msg,
             reply_markup=_build_answer_keyboard(),
         )
         logger.info("bonus_yes resent existing bonus: bonus_id=%s chat_id=%s",
@@ -749,10 +754,11 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # generate_bonus_quiz always returns a BonusQuiz (never None)
     db.save_bonus_quiz(bonus)
 
-    await context.bot.send_message(chat_id=chat_id, text=bonus.full_message)
+    passage_msg, question_msg = format_bonus_quiz_message_split(bonus)
+    await context.bot.send_message(chat_id=chat_id, text=passage_msg)
     await context.bot.send_message(
         chat_id=chat_id,
-        text="👉 答えを選んでね：（1 / 2 / 3 / 4 ボタン）",
+        text=question_msg,
         reply_markup=_build_answer_keyboard(),
     )
     logger.info("bonus_quiz_generated and sent: bonus_id=%s chat_id=%s",
