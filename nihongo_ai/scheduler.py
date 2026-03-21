@@ -26,6 +26,7 @@ from .config import (
     REMINDER_MESSAGES,
     WEEKLY_SUMMARY_DAY,
     RETRY_BACKOFF_MINUTES,
+    ADMIN_CHAT_IDS,
     logger,
 )
 from .models import Quiz, WeeklyStats
@@ -57,15 +58,20 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
     scheduler = get_scheduler()
 
     # Daily quiz at 9:00am SGT
+    # A2 FIX: misfire_grace_time raised from 3600 (1h) to 43200 (12h).
+    # Previously a Railway outage of >1 hour would silently skip the day's quiz,
+    # breaking all users' streaks with no explanation. 12 hours covers all
+    # realistic outage scenarios while still not firing the next day.
     scheduler.add_job(
         daily_quiz_job,
         CronTrigger(hour=QUIZ_HOUR, minute=0, timezone=TIMEZONE),
         id="daily_quiz",
         replace_existing=True,
-        misfire_grace_time=3600,
+        misfire_grace_time=43200,
     )
 
     # Reminders at 12pm, 6pm, 9pm SGT
+    # Reminders stay at 1h grace — a stale reminder sent hours late is unhelpful
     for hour in REMINDER_HOURS:
         scheduler.add_job(
             reminder_job,
@@ -77,12 +83,13 @@ def setup_scheduler(app: Application) -> AsyncIOScheduler:
         )
 
     # Weekly summary — Friday at 8:00pm SGT
+    # 6h grace: summary sent up to 6h late is still useful on a Friday evening
     scheduler.add_job(
         weekly_summary_job,
         CronTrigger(day_of_week=WEEKLY_SUMMARY_DAY, hour=20, minute=0, timezone=TIMEZONE),
         id="weekly_summary",
         replace_existing=True,
-        misfire_grace_time=3600,
+        misfire_grace_time=21600,
     )
 
     logger.info("Scheduler configured with daily quiz, reminders, and weekly summary jobs")
@@ -102,18 +109,19 @@ async def daily_quiz_job() -> None:
     today = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
     logger.info("Daily quiz job started for %s", today)
 
-    # Check if quiz already exists (e.g., from /reset_today)
     quiz = db.get_today_quiz(today)
     if quiz is None:
         quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
         db.save_today_quiz(quiz)
         logger.info("Quiz generated for %s", today)
 
-    # Schedule fallback retry if this was a fallback quiz
     if quiz.is_fallback:
         _schedule_fallback_retry(today)
+        # D3 FIX: notify admins when generation fails so the problem is
+        # immediately visible — previously this was silent and only detectable
+        # by noticing the same fallback passage arriving every day.
+        await _notify_admins_fallback(today)
 
-    # Send to all active users
     active_users = db.get_active_users()
     logger.info("Sending quiz to %d active users", len(active_users))
 
@@ -121,6 +129,10 @@ async def daily_quiz_job() -> None:
     fail_list: list[int] = []
 
     for user in active_users:
+        # ISSUE FIX #1: pass _app directly — send_quiz_to_user accepts both
+        # Application and ContextTypes objects since it only uses .bot on them.
+        # The type annotation on send_quiz_to_user uses `context` loosely; passing
+        # _app (which has .bot) is intentional and documented here.
         success = await send_quiz_to_user(_app, user.chat_id, quiz)
         if success:
             success_count += 1
@@ -129,9 +141,34 @@ async def daily_quiz_job() -> None:
 
     logger.info("Quiz sent: %d success, %d failed", success_count, len(fail_list))
 
-    # Schedule retries for failed sends
     if fail_list:
         _schedule_send_retries(fail_list, quiz, attempt=0)
+
+
+async def _notify_admins_fallback(date_str: str) -> None:
+    """
+    D3 FIX: Send a Telegram alert to all admin chat IDs when quiz generation
+    fails and a hardcoded fallback is used. Previously this was completely
+    silent — the only way to detect it was noticing the same passage every day.
+    """
+    if _app is None or not ADMIN_CHAT_IDS:
+        return
+    msg = (
+        f"⚠️ Nihongo.AI Admin Alert\n\n"
+        f"Quiz generation failed for {date_str}.\n"
+        f"A hardcoded fallback passage was sent to all users.\n\n"
+        f"Please check:\n"
+        f"• Railway logs for OpenAI error details\n"
+        f"• That OPENAI_API_KEY is valid and has quota\n"
+        f"• OpenAI API status at status.openai.com\n\n"
+        f"The bot will retry with a full quiz in 10 minutes."
+    )
+    for admin_id in ADMIN_CHAT_IDS:
+        try:
+            await _app.bot.send_message(chat_id=admin_id, text=msg)
+            logger.info("Admin fallback alert sent to chat_id=%s", admin_id)
+        except Exception as e:
+            logger.error("Failed to send admin alert to chat_id=%s: %s", admin_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -201,27 +238,35 @@ def _schedule_fallback_retry(date_str: str) -> None:
 
 
 async def _fallback_retry_job(date_str: str) -> None:
-    """Try generating the full quiz after a fallback was sent."""
+    """
+    Try generating the full quiz after a fallback was sent.
+
+    ISSUE FIX #7: Previously called qg.generate_quiz(is_fallback=False) directly —
+    a single attempt with no retry loop. If that one attempt timed out, the hardcoded
+    fallback stayed in the DB for the rest of the day with no further retries.
+    Now calls generate_quiz_with_fallback() which uses the full 3-attempt retry loop,
+    giving the best possible chance of producing a real AI-generated passage.
+    """
     if _app is None:
         return
 
     existing = db.get_today_quiz(date_str)
     if existing and not existing.is_fallback:
-        return  # Already replaced
+        logger.info("Fallback retry skipped — full quiz already in DB for %s", date_str)
+        return
 
-    quiz = await asyncio.to_thread(
-        qg.generate_quiz,
-        date_str=date_str,
-        is_fallback=False,
-    )
-    if quiz is None:
-        logger.warning("Fallback retry also failed for %s", date_str)
+    # ISSUE FIX #7: use generate_quiz_with_fallback (3 retries) not generate_quiz (1 try)
+    quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, date_str)
+
+    # Only replace the DB entry if we got a proper full quiz, not another fallback
+    if quiz.is_fallback:
+        logger.warning("Fallback retry for %s still produced a fallback quiz — keeping original", date_str)
         return
 
     db.save_today_quiz(quiz)
     logger.info("Full quiz generated on fallback retry for %s", date_str)
 
-    # Send to users who haven't answered yet
+    # Send the full version to users who haven't answered the fallback yet
     unanswered = db.get_unanswered_users(date_str)
     for chat_id in unanswered:
         try:
@@ -293,12 +338,30 @@ async def weekly_summary_job() -> None:
 
 
 def _format_weekly_summary(chat_id: int, answers: list, streak: int) -> str:
-    """Format the weekly summary message."""
+    """
+    Format the weekly summary message.
+
+    A8 FIX: added minimum threshold of 3 answers before showing a full
+    analysis. A user who started on Thursday only has 2 quizzes in the
+    Sat-Fri window — showing accuracy/mistake analysis on 2 data points
+    is misleading. Show an encouraging partial-week message instead.
+    """
     if not answers:
         return (
             "📊 Weekly Summary\n\n"
             "Looks like it was a quiet week — no quizzes completed yet. "
             "Type /today to get back into the habit!"
+        )
+
+    # A8 FIX: not enough data for meaningful analysis
+    if len(answers) < 3:
+        correct = sum(1 for a in answers if a.is_correct)
+        return (
+            "📊 Weekly Summary\n\n"
+            f"You completed {len(answers)} quiz(zes) this week — great start! 🌱\n"
+            f"✅ Correct: {correct}/{len(answers)}\n"
+            f"🔥 Current streak: {streak} day(s)\n\n"
+            "Keep going — a full week of practice will unlock your detailed summary! 📘✨"
         )
 
     total = len(answers)

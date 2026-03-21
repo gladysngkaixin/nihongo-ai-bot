@@ -91,11 +91,19 @@ async def _offer_bonus_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
 
 def _adapt_difficulty(chat_id: int) -> None:
+    """
+    Adjust user difficulty based on recent accuracy.
+
+    BUG FIX #3: Previously used dict subscript a["is_correct"] on Answer
+    dataclass objects, which raises TypeError on every call after 10 answers.
+    Fixed to use attribute access a.is_correct.
+    """
     recent = db.get_user_answers_recent(chat_id, limit=DIFFICULTY_WINDOW)
     if len(recent) < DIFFICULTY_WINDOW:
         return
 
-    correct = sum(1 for a in recent if a["is_correct"])
+    # BUG FIX #3: was a["is_correct"] — Answer is a dataclass, not a dict
+    correct = sum(1 for a in recent if a.is_correct)
     accuracy = correct / len(recent)
 
     if accuracy > HIGH_ACCURACY_THRESHOLD:
@@ -109,14 +117,39 @@ def _adapt_difficulty(chat_id: int) -> None:
 
 
 def _update_streak(chat_id: int, quiz_date: str) -> None:
+    """
+    Update streak after a quiz answer.
+
+    W1 FIX: The previous S1 fix introduced a regression. The condition
+    'yesterday_answer OR quiz_date == today' caused quiz_date == today to
+    always be True for normal answers, meaning a user who missed 5 days
+    and then answered still got streak+1 instead of reset to 1.
+
+    Correct logic, handling both cases cleanly:
+    - Normal answer (quiz_date == today): check if yesterday was answered.
+      If yes → streak+1. If no → reset to 1.
+    - Late answer (quiz_date == yesterday): check if the day before
+      quiz_date was answered. If yes → streak+1. If no → reset to 1.
+    This correctly resets streaks after missed days in both cases.
+    """
     user = db.get_user(chat_id)
     if not user:
         return
 
-    yesterday = (datetime.strptime(quiz_date, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-    yesterday_answer = db.get_answer(chat_id, yesterday)
+    today = datetime.now(TIMEZONE).strftime("%Y-%m-%d")
 
-    if yesterday_answer:
+    if quiz_date == today:
+        # Normal answer — chain depends on whether yesterday was answered
+        yesterday = (datetime.now(TIMEZONE) - timedelta(days=1)).strftime("%Y-%m-%d")
+        prior_answer = db.get_answer(chat_id, yesterday)
+    else:
+        # Late answer for a previous date — chain depends on the day before that date
+        day_before = (
+            datetime.strptime(quiz_date, "%Y-%m-%d") - timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        prior_answer = db.get_answer(chat_id, day_before)
+
+    if prior_answer:
         new_streak = user.streak + 1
     else:
         new_streak = 1
@@ -155,6 +188,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     today = _today_str()
     quiz = db.get_today_quiz(today)
     if quiz is None:
+        # ISSUE FIX #11: With 90s timeout × up to 5 attempts, worst-case generation
+        # is ~7.5 minutes. Send an immediate holding message so the user knows
+        # the bot is working and hasn't frozen.
+        await update.message.reply_text("⏳ Generating today's quiz, please wait a moment...")
         quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
         db.save_today_quiz(quiz)
 
@@ -169,7 +206,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
         else:
             active_bonus = db.get_active_bonus_quiz(chat_id, today)
-            if active_bonus:
+            # H4 FIX: guard against stale bonus from a previous day (e.g. after pause+resume)
+            if active_bonus and active_bonus.date == today:
                 await _send_bonus_quiz_to_user(update, context, chat_id, active_bonus)
             else:
                 await _offer_bonus_quiz(update, context, chat_id, total_done)
@@ -204,7 +242,10 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     existing_main = db.get_answer(chat_id, today)
     if existing_main:
         active_bonus = db.get_active_bonus_quiz(chat_id, today)
-        if active_bonus:
+        # W3 FIX: get_active_bonus_quiz already filters by date=today, so this
+        # is consistent. But adding explicit .date == today guard as safety net
+        # against stale bonus quizzes surfacing after pause+resume across days.
+        if active_bonus and active_bonus.date == today:
             await _send_bonus_quiz_to_user(update, context, chat_id, active_bonus)
             logger.info("/today resent active bonus quiz: bonus_id=%s chat_id=%s",
                         active_bonus.bonus_id, chat_id)
@@ -215,6 +256,8 @@ async def today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     quiz = db.get_today_quiz(today)
     if quiz is None:
+        # ISSUE FIX #11: send holding message before potentially slow generation
+        await update.message.reply_text("⏳ Generating today's quiz, please wait a moment...")
         quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
         db.save_today_quiz(quiz)
 
@@ -290,8 +333,14 @@ async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     db.update_last_interaction(chat_id)
+    user = db.get_or_create_user(chat_id)
+    # H8 FIX: check current state so typing /pause twice gives a sensible response
+    if user.paused:
+        await update.message.reply_text(
+            "⏸️ You're already paused. Type /resume whenever you're ready! 🌸"
+        )
+        return
     db.set_user_paused(chat_id, True)
-
     await update.message.reply_text(
         "⏸️ Paused! You won't receive daily quizzes until you type /resume.\n"
         "Take your time — we'll be here when you're ready! 🌸"
@@ -308,8 +357,14 @@ async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     db.update_last_interaction(chat_id)
+    user = db.get_or_create_user(chat_id)
+    # H8 FIX: check current state
+    if not user.paused:
+        await update.message.reply_text(
+            "▶️ You're not paused — quizzes are already active! Type /today to get today's quiz. 📘✨"
+        )
+        return
     db.set_user_paused(chat_id, False)
-
     await update.message.reply_text(
         "▶️ Resumed! You'll receive daily quizzes again starting tomorrow at 9:00am SGT.\n"
         "Type /today to get today's quiz now! 📘✨"
@@ -386,6 +441,11 @@ async def delete_my_data_command(update: Update, context: ContextTypes.DEFAULT_T
 
     db.delete_user(chat_id)
 
+    # A5 FIX: clear the in-memory spam entry so /start works immediately after
+    # deletion without hitting the 1-second cooldown. Also prevents the dict
+    # from holding entries for users who have deleted their account.
+    _last_command.pop(chat_id, None)
+
     await update.message.reply_text(
         "🗑️ All your data has been deleted.\n"
         "If you want to start again, just type /start.\n"
@@ -395,7 +455,11 @@ async def delete_my_data_command(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin-only true reset for today's quizzes."""
+    """Admin-only: generate a fresh quiz preview sent only to the admin.
+
+    Does NOT touch the globally stored quiz, other users' answers, streaks,
+    or bonus quizzes. Preview only — no answer buttons.
+    """
     if not update.effective_chat or not update.message:
         return
     chat_id = update.effective_chat.id
@@ -408,43 +472,41 @@ async def reset_today_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     today = _today_str()
+    await update.message.reply_text("⏳ Generating a fresh quiz preview for you...")
+    logger.info("/reset_today preview requested by admin chat_id=%s", chat_id)
 
-    await update.message.reply_text(
-        "🔄 Performing a full reset for today's quizzes...\n"
-        "This will delete today's stored quiz, answers, bonus quizzes, and regenerate a fresh real quiz."
-    )
-    logger.info("/reset_today requested by admin chat_id=%s", chat_id)
+    # X3 FIX: previously called generate_quiz_with_fallback() which, when a
+    # fallback is returned, internally schedules _schedule_fallback_retry().
+    # That retry job fires 10 minutes later and replaces the real stored quiz,
+    # then sends it to all unanswered users — a real user-facing action triggered
+    # by what was supposed to be a preview-only admin command.
+    #
+    # Fix: call generate_quiz() directly (single attempt, no retry scheduling).
+    # If that fails, fall back to _hardcoded_fallback() locally — no scheduler
+    # side-effects in either case.
+    quiz = await asyncio.to_thread(qg.generate_quiz, today)
+    if quiz is None:
+        quiz = qg._hardcoded_fallback(today)
 
-    db.delete_quiz_for_date(today)
-    db.delete_bonus_quizzes_for_date(today)
-
-    quiz = await asyncio.to_thread(qg.generate_quiz_with_fallback, today)
-    db.save_today_quiz(quiz)
-
-    await send_quiz_to_user(context, chat_id, quiz)
-
-    active_users = db.get_active_users()
-    sent_count = 0
-    for user in active_users:
-        if user.chat_id == chat_id:
-            continue
-        success = await send_quiz_to_user(context, user.chat_id, quiz)
-        if success:
-            sent_count += 1
-
+    # Send to admin only, no answer buttons (preview only)
+    await context.bot.send_message(chat_id=chat_id, text=quiz.full_message)
     await context.bot.send_message(
         chat_id=chat_id,
-        text=(
-            f"✅ Today's quiz has been fully reset and regenerated.\n"
-            f"It has been sent to you and {sent_count} other active user(s)."
-        ),
+        text="✅ Fresh quiz preview generated and sent only to you. This is for review only.",
     )
-    logger.info("reset_today complete: sent to admin + %s active users", sent_count)
+    logger.info("/reset_today complete: preview sent to admin chat_id=%s only", chat_id)
 
 
 async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if not query or not query.data or not query.message:
+        return
+
+    # W6 FIX: only process answer button presses in private chats,
+    # consistent with the text_answer_handler guard. Prevents phantom
+    # answer records if a quiz message is forwarded to a group.
+    if query.message.chat.type != "private":
+        await query.answer()
         return
 
     await query.answer()
@@ -469,6 +531,12 @@ async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def text_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text or not update.effective_chat:
+        return
+
+    # A4 FIX: ignore typed answers in group/supergroup/channel chats.
+    # Without this, typing '1'-'4' in any group the bot is in triggers a
+    # confusing "No quiz available" response.
+    if update.effective_chat.type != "private":
         return
 
     chat_id = update.effective_chat.id
@@ -605,9 +673,10 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query.data != "bonus_yes":
         return
 
-    # Duplicate guard BEFORE generation
+    # Check for an existing unanswered bonus quiz before anything else
     active_bonus = db.get_active_bonus_quiz(chat_id, today)
-    if active_bonus:
+    # H5 FIX: explicit date guard for consistency with today_command and start_command
+    if active_bonus and active_bonus.date == today:
         await context.bot.send_message(
             chat_id=chat_id,
             text=active_bonus.full_message,
@@ -644,6 +713,16 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    # ISSUE FIX #8: collect all topic labels used today (daily + any bonus already
+    # generated) so the new bonus quiz picks a different topic each time.
+    used_topics: list[str] = []
+    daily_quiz = db.get_today_quiz(today)
+    if daily_quiz and daily_quiz.topic_label_en:
+        used_topics.append(daily_quiz.topic_label_en)
+    for b in bonus_quizzes_today:
+        if b.topic_label_en:
+            used_topics.append(b.topic_label_en)
+
     await query.message.reply_text("⏳ Generating your bonus quiz... please wait!")
     bonus = await asyncio.to_thread(
         qg.generate_bonus_quiz,
@@ -651,16 +730,10 @@ async def bonus_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         chat_id,
         quiz_type,
         quiz_sequence_for_day,
+        used_topics,
     )
 
-    if bonus is None:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="🙇 Sorry — I couldn't generate a bonus quiz right now. Please try again later!",
-        )
-        logger.error("Bonus quiz generation failed for chat_id=%s", chat_id)
-        return
-
+    # generate_bonus_quiz always returns a BonusQuiz (never None)
     db.save_bonus_quiz(bonus)
 
     await context.bot.send_message(

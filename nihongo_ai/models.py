@@ -7,9 +7,7 @@ These are transport objects — the database module handles persistence.
 
 from __future__ import annotations
 
-import datetime
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -42,16 +40,23 @@ class Quiz:
     explanation_en: str = ""
     topic_label: str = ""
     topic_label_en: str = ""
-    question_type: str = ""  # main_idea, detail_comprehension, inference, vocabulary_in_context, pronoun_reference
+    # ISSUE FIX #3/#4/#5: question_type was missing from this dataclass.
+    # database.py, quiz_generator.py and handlers.py all reference quiz.question_type
+    # or construct Quiz(..., question_type=...). Without this field every quiz load,
+    # quiz generation, and answer submission crashed with TypeError/AttributeError.
+    question_type: str = ""             # main_idea, detail_comprehension, inference,
+                                        # vocabulary_in_context, pronoun_reference
     jlpt_level: str = "N5-N4"
     is_fallback: bool = False
-    created_at: str = ""  # ISO datetime
-    full_message: str = ""  # Pre-formatted Telegram message
+    created_at: str = ""                # ISO datetime
+    full_message: str = ""              # Pre-formatted Telegram message
 
 
 @dataclass
 class BonusQuiz:
     """A bonus quiz offered after the user completes the main daily quiz.
+    Bonus quizzes are shorter (150-200 chars) by design — intentionally less
+    taxing than the main daily quiz (250-300 chars).
     Bonus quizzes do not affect streak, weekly summary, or difficulty adaptation.
     """
     bonus_id: str = ""                  # e.g. "2024-01-15_bonus_1"
@@ -82,10 +87,11 @@ class Answer:
     """A user's answer to a quiz."""
     chat_id: int = 0
     quiz_date: str = ""                 # YYYY-MM-DD
-    chosen_option: int = 0              # 1-4
+    chosen_option: int = 0             # 1-4
     is_correct: bool = False
     answered_at: str = ""               # ISO datetime
-    question_type: str = ""             # main_idea, detail, inference, vocab, pronoun
+    question_type: str = ""             # main_idea, detail_comprehension, inference,
+                                        # vocabulary_in_context, pronoun_reference
 
 
 @dataclass

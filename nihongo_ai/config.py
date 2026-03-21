@@ -10,6 +10,15 @@ import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+# D1 FIX: auto-load .env file for local development.
+# On Railway, env vars are injected by the platform and this is a no-op.
+# Locally, without this call os.getenv() silently ignores the .env file.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed — fine on Railway where vars are injected
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -41,7 +50,13 @@ if _raw_admin_ids:
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-GENERATION_TIMEOUT: int = 30  # increased from 15
+
+# BUG FIX #1: Increased from 15 (and even 30) to 90 seconds.
+# Generating a 250-300 char Japanese passage with furigana via OpenAI
+# routinely exceeds 15-30s, causing silent timeouts → hardcoded fallback
+# → same passage sent every day. 90s gives enough buffer for API slowdowns
+# without letting the bot hang for 2 full minutes before retrying.
+GENERATION_TIMEOUT: int = 90
 
 # ---------------------------------------------------------------------------
 # Timezone & Scheduling

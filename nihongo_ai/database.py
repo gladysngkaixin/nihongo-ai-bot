@@ -7,7 +7,6 @@ All functions use a single SQLite database file for persistence.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -64,6 +63,7 @@ CREATE TABLE IF NOT EXISTS daily_quizzes (
     explanation_en  TEXT NOT NULL DEFAULT '',
     topic_label     TEXT NOT NULL DEFAULT '',
     topic_label_en  TEXT NOT NULL DEFAULT '',
+    question_type   TEXT NOT NULL DEFAULT '',
     jlpt_level      TEXT NOT NULL DEFAULT 'N5-N4',
     is_fallback     INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
@@ -113,11 +113,38 @@ CREATE TABLE IF NOT EXISTS bonus_quizzes (
 CREATE INDEX IF NOT EXISTS idx_bonus_chat_date ON bonus_quizzes(chat_id, date);
 """
 
+# BUG FIX #6: The original schema was missing the question_type column on
+# daily_quizzes. Added above. For existing databases that already exist
+# without the column, _migrate_db() adds it safely via ALTER TABLE.
+_MIGRATIONS = [
+    "ALTER TABLE daily_quizzes ADD COLUMN question_type TEXT NOT NULL DEFAULT ''",
+]
+
+
+def _migrate_db(conn: sqlite3.Connection) -> None:
+    """Apply any schema migrations needed for existing databases."""
+    for migration in _MIGRATIONS:
+        try:
+            conn.execute(migration)
+            conn.commit()
+            logger.info("Migration applied: %s", migration[:60])
+        except sqlite3.OperationalError:
+            # Column already exists — safe to ignore
+            pass
+
 
 def init_db() -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, then apply migrations."""
     conn = _get_conn()
     conn.executescript(_SCHEMA)
+    conn.commit()
+    _migrate_db(conn)
+    # A3 FIX: WAL mode accumulates changes in a -wal file that is only folded
+    # back into the main DB file during a checkpoint. Without an explicit
+    # checkpoint the -wal file grows indefinitely on Railway's persistent
+    # volume — eventually slowing reads and risking filling the volume.
+    # TRUNCATE mode checkpoints and then truncates the -wal file to zero bytes.
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.commit()
     logger.info("Database initialised at %s", DB_PATH)
 
@@ -149,8 +176,7 @@ def get_or_create_user(chat_id: int) -> User:
     conn = _get_conn()
     row = conn.execute("SELECT * FROM users WHERE chat_id=?", (chat_id,)).fetchone()
     if row:
-        user = _row_to_user(row)
-        return user
+        return _row_to_user(row)
     now = _now_iso()
     conn.execute(
         "INSERT INTO users (chat_id, joined_at, last_interaction) VALUES (?,?,?)",
@@ -260,6 +286,7 @@ def delete_user(chat_id: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _row_to_quiz(row: sqlite3.Row) -> Quiz:
+    # BUG FIX #6: question_type is now fetched from the DB row
     return Quiz(
         quiz_id=row["quiz_id"],
         date=row["date"],
@@ -274,6 +301,7 @@ def _row_to_quiz(row: sqlite3.Row) -> Quiz:
         explanation_en=row["explanation_en"],
         topic_label=row["topic_label"],
         topic_label_en=row["topic_label_en"],
+        question_type=row["question_type"],
         jlpt_level=row["jlpt_level"],
         is_fallback=bool(row["is_fallback"]),
         created_at=row["created_at"],
@@ -284,18 +312,19 @@ def _row_to_quiz(row: sqlite3.Row) -> Quiz:
 def save_today_quiz(quiz: Quiz) -> None:
     """Insert or replace today's quiz."""
     conn = _get_conn()
+    # BUG FIX #6: question_type is now included in INSERT
     conn.execute(
         """INSERT OR REPLACE INTO daily_quizzes
            (quiz_id, date, passage, question, option1, option2, option3, option4,
             correct_option, explanation_ja, explanation_en, topic_label, topic_label_en,
-            jlpt_level, is_fallback, created_at, full_message)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            question_type, jlpt_level, is_fallback, created_at, full_message)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             quiz.quiz_id, quiz.date, quiz.passage, quiz.question,
             quiz.option1, quiz.option2, quiz.option3, quiz.option4,
             quiz.correct_option, quiz.explanation_ja, quiz.explanation_en,
-            quiz.topic_label, quiz.topic_label_en, quiz.jlpt_level,
-            int(quiz.is_fallback), quiz.created_at, quiz.full_message,
+            quiz.topic_label, quiz.topic_label_en, quiz.question_type,
+            quiz.jlpt_level, int(quiz.is_fallback), quiz.created_at, quiz.full_message,
         ),
     )
     conn.commit()
@@ -378,7 +407,6 @@ def mark_answer(chat_id: int, quiz_date: str, chosen: int,
                      chat_id, quiz_date, chosen, is_correct)
         return True
     except sqlite3.IntegrityError:
-        # Duplicate — user already answered
         return False
 
 
@@ -531,14 +559,12 @@ def mark_bonus_answer(bonus_id: str, chat_id: int,
 def count_quizzes_today(chat_id: int, date_str: str) -> int:
     """Return total number of quizzes answered today (main + bonus)."""
     conn = _get_conn()
-    # Count main quiz answers
     main_row = conn.execute(
         "SELECT COUNT(*) as cnt FROM answers WHERE chat_id=? AND quiz_date=?",
         (chat_id, date_str),
     ).fetchone()
     main_count = main_row["cnt"] if main_row else 0
 
-    # Count answered bonus quizzes
     bonus_row = conn.execute(
         "SELECT COUNT(*) as cnt FROM bonus_quizzes WHERE chat_id=? AND date=? AND is_answered=1",
         (chat_id, date_str),
@@ -549,7 +575,7 @@ def count_quizzes_today(chat_id: int, date_str: str) -> int:
 
 
 def delete_bonus_quizzes_for_date(date_str: str) -> None:
-    """Delete all bonus quizzes for a given date (used by /reset_today for cleanup)."""
+    """Delete all bonus quizzes for a given date."""
     conn = _get_conn()
     conn.execute("DELETE FROM bonus_quizzes WHERE date=?", (date_str,))
     conn.commit()
